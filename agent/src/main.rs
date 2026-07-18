@@ -9,7 +9,7 @@ mod crypto;
 mod socks5;
 mod websocket;
 
-use config::{AgentConfig, ConfigStore};
+use config::ConfigStore;
 use socks5::server::Socks5Server;
 use websocket::WebSocketClient;
 

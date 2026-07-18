@@ -1,0 +1,6 @@
+{
+  "server_id": null,
+  "agent_token": null,
+  "server_url": "ws://localhost:3000",
+  "encryption_key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

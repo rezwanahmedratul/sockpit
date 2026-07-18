@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{error, info, warn};
 
-use crate::config::{AgentConfig, ConfigStore};
+use crate::config::ConfigStore;
 use crate::crypto::decrypt_password;
 use crate::socks5::auth::UserCredential;
 use crate::socks5::server::Socks5Server;
@@ -22,7 +22,8 @@ struct WsMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "replyTo")]
     reply_to: Option<String>,
-    timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<String>,
     payload: serde_json::Value,
 }
 
@@ -91,7 +92,7 @@ impl WebSocketClient {
                         msg_type: "AGENT_AUTH".to_string(),
                         id: Some(uuid::Uuid::new_v4().to_string()),
                         reply_to: None,
-                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        timestamp: Some(chrono::Utc::now().to_rfc3339()),
                         payload: auth_payload,
                     };
 
@@ -103,7 +104,7 @@ impl WebSocketClient {
 
                     // 2. Receive AUTH_RESULT
                     let ws_write = Arc::new(Mutex::new(write));
-                    let ws_write_clone = ws_write.clone();
+                    let _ws_write_clone = ws_write.clone();
 
                     let mut authenticated = false;
                     let mut server_id = config.server_id.clone();
@@ -174,7 +175,7 @@ impl WebSocketClient {
                                 msg_type: "HEARTBEAT".to_string(),
                                 id: Some(uuid::Uuid::new_v4().to_string()),
                                 reply_to: None,
-                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                timestamp: Some(chrono::Utc::now().to_rfc3339()),
                                 payload: serde_json::json!({
                                     "server_id": s_id_hb,
                                     "uptime_seconds": 1234, // Mock uptime
@@ -207,7 +208,7 @@ impl WebSocketClient {
                                 msg_type: "METRICS_REPORT".to_string(),
                                 id: Some(uuid::Uuid::new_v4().to_string()),
                                 reply_to: None,
-                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                timestamp: Some(chrono::Utc::now().to_rfc3339()),
                                 payload: serde_json::json!({
                                     "server_id": s_id_metrics,
                                     "cpu_usage": 5.0, // Mock metrics

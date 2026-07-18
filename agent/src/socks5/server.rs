@@ -6,7 +6,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use super::auth::{AuthManager, UserCredential};
+use super::auth::AuthManager;
 use super::limiter::ConnectionLimiter;
 use super::relay::TrafficRelay;
 
@@ -98,7 +98,7 @@ impl Socks5Server {
 
 async fn handle_connection(
     mut stream: TcpStream,
-    client_addr: SocketAddr,
+    _client_addr: SocketAddr,
     port: u16,
     auth_manager: Arc<AuthManager>,
     conn_limiter: Arc<ConnectionLimiter>,
