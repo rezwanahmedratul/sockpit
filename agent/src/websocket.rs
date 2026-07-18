@@ -336,7 +336,8 @@ impl WebSocketClient {
                 let _ = self.socks5_server.remove_port(port).await;
                 info!("Successfully deleted SOCKS5 user credentials and closed port");
             }
-            _ => warn!("Unknown server command"),
+            "HEARTBEAT_ACK" => {}
+            _ => warn!("Unknown server command: {}", msg.msg_type),
         }
         Ok(())
     }

@@ -82,3 +82,14 @@ To ensure this project is built correctly, subsequent models must adhere to the 
     *   Integrated `wsManager.sendToAgent` calls into `socks5-users.routes.js` on create, update, and deletion routes.
 *   **Result**: WebSocket test client successfully connected, authenticated via install token, registered agent in DB, generated agent token, and synced SOCKS5 configs.
 *   **Next Recommended Step**: Implement **Phase 5: Rust Agent & SOCKS5 Engine** to build the client daemon that runs SOCKS5 proxy listeners, enforces connection limits, connects to WebSocket, and reports metrics as defined in [docs/socks5-engine.md](file:///root/sockpit/docs/socks5-engine.md).
+
+### Phase 5: Rust Agent & SOCKS5 Engine (Completed)
+*   **Goal**: Create a lightweight, high-performance client daemon in Rust that runs SOCKS5 proxy listeners, enforces per-user connection limits, establishes persistent WebSocket connections, decrypts synced passwords in-memory, and relays traffic.
+*   **Changes**:
+    *   Setup `agent/Cargo.toml` with optimized compile profiles and dependencies.
+    *   Coded `crypto.rs` decrypting AES-256-GCM SOCKS5 passwords using hex-decoded initialization keys.
+    *   Coded SOCKS5 server modules: `auth.rs` (credential stores), `limiter.rs` (connection limit atomics), `relay.rs` (traffic copy + bandwidth stats), and `server.rs` (TCP listener loops).
+    *   Coded `websocket.rs` managing persistent WebSocket loops, prioritised token auth reconnects, heartbeats, and reconfigurations.
+    *   Coded `config.rs` loading/saving local config storage JSON files, and `main.rs` handling clap CLI inputs.
+*   **Result**: Compiled Rust agent binary successfully registered online, synced SOCKS5 credentials, opened dynamic proxy ports, authenticated client connections, and relayed Google search requests.
+*   **Next Recommended Step**: Implement **Phase 6: Installer Generation & Scripts** to build bash scripts, PowerShell scripts, and Dockerfiles to auto-deploy the agent spokes on Windows, Linux, and Docker hosts as defined in [docs/installer-generator.md](file:///root/sockpit/docs/installer-generator.md).

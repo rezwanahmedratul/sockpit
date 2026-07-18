@@ -1,6 +1,0 @@
-{
-  "server_id": "6025b2ce-10a9-43ba-bdb0-d5f31fc919ba",
-  "agent_token": "21d6eb94c5103afb2acf2fe5000bef7ab3db557824eafb89eb729307c50437a4",
-  "server_url": "ws://localhost:3000",
-  "encryption_key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-}
