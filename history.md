@@ -70,3 +70,15 @@ To ensure this project is built correctly, subsequent models must adhere to the 
     *   Updated `validate.middleware.js` to override Express query parameter properties in-place using `Object.defineProperty`.
 *   **Result**: Test query simulation succeeded for `/api/users` page listing, returning seeded admin details and total counts.
 *   **Next Recommended Step**: Implement **Phase 4: WebSocket Server** to enable agent communication, authentication, command routing, and client metrics reporting as defined in [docs/websocket-protocol.md](file:///root/sockpit/docs/websocket-protocol.md).
+
+### Phase 4: WebSocket Server (Completed)
+*   **Goal**: Establish real-time duplex agent and dashboard communication pipelines with authentication verification, ping/pong heartbeats, metric logs serialization, config syncs, and Redis pub/sub scaled message routing.
+*   **Changes**:
+    *   Coded `websocket/manager.js` implementing connection handlers, ping-pong timeouts, and client registries.
+    *   Wrote authentication validations for install token (initial register) and agent token (reconnections).
+    *   Wrote handlers for periodic metrics reporting and SOCKS5 config database updates sync.
+    *   Wired Redis duplicate pub/sub channels (`dashboard_events` and `agent_commands`) for multi-instance message routing.
+    *   Integrated WebSocket upgrade event interception inside HTTP server entry point (`index.js`).
+    *   Integrated `wsManager.sendToAgent` calls into `socks5-users.routes.js` on create, update, and deletion routes.
+*   **Result**: WebSocket test client successfully connected, authenticated via install token, registered agent in DB, generated agent token, and synced SOCKS5 configs.
+*   **Next Recommended Step**: Implement **Phase 5: Rust Agent & SOCKS5 Engine** to build the client daemon that runs SOCKS5 proxy listeners, enforces connection limits, connects to WebSocket, and reports metrics as defined in [docs/socks5-engine.md](file:///root/sockpit/docs/socks5-engine.md).

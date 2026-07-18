@@ -7,6 +7,7 @@ const validate = require('../middleware/validate.middleware');
 const cryptoUtils = require('../utils/crypto');
 const Socks5UserModel = require('../models/socks5-user.model');
 const db = require('../config/database');
+const wsManager = require('../websocket/manager');
 
 const router = express.Router({ mergeParams: true });
 
@@ -104,7 +105,18 @@ router.post('/', validate(createSocks5UserSchema), async (req, res, next) => {
       maxConnections: max_connections,
     });
 
-    // TODO: Phase 4: Emit WebSocket command to agent to start SOCKS5 on port
+    // Emit WebSocket command to agent to start SOCKS5 on port
+    wsManager.sendToAgent(serverId, {
+      type: 'ADD_SOCKS5_USER',
+      id: crypto.randomUUID(),
+      payload: {
+        socks5_user_id: newUser.id,
+        username,
+        password: passwordPlain,
+        port,
+        max_connections
+      }
+    });
 
     res.status(201).json({
       success: true,
@@ -162,7 +174,19 @@ router.put('/:socks5UserId', validate(updateSocks5UserSchema), async (req, res, 
       isActive: is_active,
     });
 
-    // TODO: Phase 4: Emit WebSocket update command to agent
+    // Emit WebSocket update command to agent
+    wsManager.sendToAgent(serverId, {
+      type: 'UPDATE_SOCKS5_USER',
+      id: crypto.randomUUID(),
+      payload: {
+        socks5_user_id: socks5UserId,
+        username: existing.username,
+        password: passwordPlain || existing.password_plain,
+        port: port || existing.port,
+        max_connections: max_connections || existing.max_connections,
+        is_active: is_active !== undefined ? is_active : existing.is_active
+      }
+    });
 
     res.json({
       success: true,
@@ -191,7 +215,16 @@ router.delete('/:socks5UserId', validate(socks5UserIdSchema), async (req, res, n
 
     await Socks5UserModel.delete(socks5UserId);
 
-    // TODO: Phase 4: Emit WebSocket remove command to agent
+    // Emit WebSocket remove command to agent
+    wsManager.sendToAgent(serverId, {
+      type: 'REMOVE_SOCKS5_USER',
+      id: crypto.randomUUID(),
+      payload: {
+        socks5_user_id: socks5UserId,
+        username: existing.username,
+        port: existing.port
+      }
+    });
 
     res.json({
       success: true,

@@ -3,6 +3,7 @@ const { app, logger } = require('./app');
 const env = require('./config/env');
 const db = require('./config/database');
 const redisClient = require('./config/redis');
+const wsManager = require('./websocket/manager');
 
 const server = http.createServer(app);
 
@@ -34,6 +35,16 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-server.listen(env.PORT, () => {
-  logger.info(`🚀 REST API Server listening on port ${env.PORT} in ${env.NODE_ENV} mode`);
-});
+(async () => {
+  try {
+    // Initialize WebSocket Manager (includes pub/sub connect)
+    await wsManager.init(server);
+
+    server.listen(env.PORT, () => {
+      logger.info(`🚀 HTTP and WebSocket Server listening on port ${env.PORT} in ${env.NODE_ENV} mode`);
+    });
+  } catch (err) {
+    logger.error(err, 'Failed to start server');
+    process.exit(1);
+  }
+})();
