@@ -50,3 +50,23 @@ To ensure this project is built correctly, subsequent models must adhere to the 
     *   Wrote `app.js` and `index.js` setting up Express, security headers (Helmet), CORS, JSON parser, request loggers (Pino), error handlers, and global rate limiter.
 *   **Result**: API server successfully started on port `3000` and passed synchronous `/api/health` checking logs successfully.
 *   **Next Recommended Step**: Implement **Phase 2: Authentication System** including signup/login routes, password hashing validation, JWT issue/refresh endpoints, and RBAC role/ownership route validation middleware as defined in [docs/authentication.md](file:///root/sockpit/docs/authentication.md).
+
+### Phase 2: Authentication System (Completed)
+*   **Goal**: Implement password encryption logic, models, authentication tokens, and middlewares.
+*   **Changes**:
+    *   Coded `crypto.js` supporting AES-256-GCM SOCKS5 password sync encryption.
+    *   Coded `user.model.js` and `auth.service.js` with refresh token rotation and revocation verification backed by Redis.
+    *   Coded token validation middleware (`auth.middleware.js`), role constraint check (`rbac.middleware.js`), and ownership validator (`ownership.middleware.js`).
+    *   Implemented auth controllers and endpoints `/login`, `/refresh`, `/logout`.
+*   **Result**: Login request successfully returned access/refresh tokens. Rotation successfully verified token reuse attack rejection.
+
+### Phase 3: REST API (Completed)
+*   **Goal**: Build dashboard administration endpoints, server listing with multi-tenancy limits, SOCKS5 user credentials management, and metrics rollup histories.
+*   **Changes**:
+    *   Wrote `users.routes.js` exposing dashboard user creation, updates, and listings (admin only).
+    *   Wrote `servers.routes.js` for list filtering and server details lookup.
+    *   Wrote `socks5-user.model.js` and `socks5-users.routes.js` enabling proxy port configuring, SOCKS5 passwords hashing, and AES encryption.
+    *   Wrote `metric.model.js` and `metrics.routes.js` supplying timeline bucket grouping charts data.
+    *   Updated `validate.middleware.js` to override Express query parameter properties in-place using `Object.defineProperty`.
+*   **Result**: Test query simulation succeeded for `/api/users` page listing, returning seeded admin details and total counts.
+*   **Next Recommended Step**: Implement **Phase 4: WebSocket Server** to enable agent communication, authentication, command routing, and client metrics reporting as defined in [docs/websocket-protocol.md](file:///root/sockpit/docs/websocket-protocol.md).
