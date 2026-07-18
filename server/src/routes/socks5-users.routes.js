@@ -26,6 +26,7 @@ const createSocks5UserSchema = z.object({
 
 const updateSocks5UserSchema = z.object({
   params: z.object({
+    serverId: z.string().uuid('Invalid Server ID format'),
     socks5UserId: z.string().uuid('Invalid SOCKS5 User ID format'),
   }),
   body: z.object({
@@ -38,6 +39,7 @@ const updateSocks5UserSchema = z.object({
 
 const socks5UserIdSchema = z.object({
   params: z.object({
+    serverId: z.string().uuid('Invalid Server ID format'),
     socks5UserId: z.string().uuid('Invalid SOCKS5 User ID format'),
   }),
 });
@@ -183,6 +185,7 @@ router.put('/:socks5UserId', validate(updateSocks5UserSchema), async (req, res, 
         username: existing.username,
         password: passwordPlain || existing.password_plain,
         port: port || existing.port,
+        old_port: port && port !== existing.port ? existing.port : undefined,
         max_connections: max_connections || existing.max_connections,
         is_active: is_active !== undefined ? is_active : existing.is_active
       }

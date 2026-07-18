@@ -70,16 +70,16 @@ impl WebSocketClient {
                     let (mut write, mut read) = ws_stream.split();
                     
                     // 1. Send AGENT_AUTH
-                    let auth_payload = if let Some(ref it) = self.install_token {
-                        serde_json::json!({
-                            "auth_type": "install_token",
-                            "token": it,
-                            "agent_info": get_agent_info()
-                        })
-                    } else if let Some(ref at) = config.agent_token {
+                    let auth_payload = if let Some(ref at) = config.agent_token {
                         serde_json::json!({
                             "auth_type": "agent_token",
                             "token": at,
+                            "agent_info": get_agent_info()
+                        })
+                    } else if let Some(ref it) = self.install_token {
+                        serde_json::json!({
+                            "auth_type": "install_token",
+                            "token": it,
                             "agent_info": get_agent_info()
                         })
                     } else {
@@ -297,10 +297,18 @@ impl WebSocketClient {
                 let username = msg.payload.get("username").and_then(|v| v.as_str()).unwrap_or_default().to_string();
                 let enc_password = msg.payload.get("password").and_then(|v| v.as_str()).unwrap_or_default();
                 let port = msg.payload.get("port").and_then(|v| v.as_u64()).unwrap_or(1080) as u16;
+                let old_port = msg.payload.get("old_port").and_then(|v| v.as_u64()).map(|p| p as u16);
                 let max_connections = msg.payload.get("max_connections").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
                 let is_active = msg.payload.get("is_active").and_then(|v| v.as_bool()).unwrap_or(true);
 
                 let password_plain = decrypt_password(enc_password, encryption_key)?;
+
+                // Shut down old port listener if port changed
+                if let Some(op) = old_port {
+                    if op != port {
+                        let _ = self.socks5_server.remove_port(op).await;
+                    }
+                }
 
                 // Setup port
                 self.socks5_server.add_port(port).await?;
@@ -323,7 +331,10 @@ impl WebSocketClient {
 
                 self.socks5_server.auth_manager().remove_user(port, username);
                 self.socks5_server.conn_limiter().remove_user(socks5_user_id);
-                info!("Successfully deleted SOCKS5 user credentials");
+                
+                // Shut down port listener completely
+                let _ = self.socks5_server.remove_port(port).await;
+                info!("Successfully deleted SOCKS5 user credentials and closed port");
             }
             _ => warn!("Unknown server command"),
         }
