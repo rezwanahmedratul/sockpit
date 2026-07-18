@@ -72,12 +72,14 @@ const usersRoutes = require('./routes/users.routes');
 const serversRoutes = require('./routes/servers.routes');
 const socks5UsersRoutes = require('./routes/socks5-users.routes');
 const metricsRoutes = require('./routes/metrics.routes');
+const installersRoutes = require('./routes/installers.routes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/servers', serversRoutes);
 app.use('/api/servers/:serverId/socks5-users', socks5UsersRoutes);
 app.use('/api/servers/:serverId/metrics', metricsRoutes);
+app.use('/api/installers', installersRoutes);
 
 // Global 404 handler
 app.use((req, res, next) => {

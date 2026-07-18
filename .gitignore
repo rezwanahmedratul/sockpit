@@ -1,0 +1,23 @@
+# Rust build artifacts
+agent/target/
+**/target/
+Cargo.lock
+
+# Node.js dependencies & settings
+node_modules/
+.env
+server/.env
+server/npm-debug.log*
+
+# OS and Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local database data & logs
+pgdata/
+redisdata/
+*.log
+agent/*.json
+**/test-config.json
