@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
-use tracing::{error, info, warn, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
@@ -50,7 +50,7 @@ fn is_elevated() -> bool {
     unsafe {
         let mut token: HANDLE = 0;
         let process = windows_sys::Win32::System::Threading::GetCurrentProcess();
-        if windows_sys::Win32::Security::OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+        if windows_sys::Win32::System::Threading::OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
             return false;
         }
 
@@ -130,6 +130,7 @@ async fn run_agent(args: &Args) -> anyhow::Result<()> {
 #[cfg(windows)]
 mod windows_svc {
     use std::ffi::OsString;
+    use clap::Parser;
     use windows_service::{
         define_windows_service,
         service::{
