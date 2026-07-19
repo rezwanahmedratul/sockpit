@@ -92,7 +92,42 @@ The Windows agent compiles into a single executable that integrates with the Win
    .\agent\target\release\sockpit-agent.exe
    ```
 
-### Method B: Cross-Compile from Linux
+### Method B: Build using GitHub Actions (Automated & Recommended)
+The repository is pre-configured with a CI/CD workflow at [`.github/workflows/build-agent.yml`](file:///root/sockpit/.github/workflows/build-agent.yml) that builds both Windows and Linux binaries automatically.
+
+#### Step 1: Push the Code to GitHub
+Ensure the workspace is pushed to your remote GitHub repository:
+```bash
+git init
+git add .
+git commit -m "Initialize project with Windows UAC elevation and services"
+git remote add origin <your-github-repo-url>
+git branch -M main
+git push -u origin main
+```
+
+#### Step 2: Trigger the Workflow
+You can trigger the workflow in two ways:
+
+- **Option 1: Manual Trigger (GitHub UI)**:
+  1. Go to your repository on GitHub.
+  2. Click on the **Actions** tab.
+  3. Under "Workflows" in the sidebar, select **Build & Release Agent**.
+  4. Click **Run workflow** -> Select branch `main` -> Click **Run workflow** button.
+
+- **Option 2: Git Tag Push (Automatic)**:
+  Create and push a version tag to trigger the builder job automatically:
+  ```bash
+  git tag v1.0.0
+  git push origin v1.0.0
+  ```
+
+#### Step 3: Retrieve the Compiled .exe File
+1. Once the workflow run completes (takes about 2-3 minutes), click on the run summary.
+2. Scroll down to the **Artifacts** section at the bottom.
+3. Download the `sockpit-agent-windows-amd64.exe` artifact.
+
+### Method C: Cross-Compile from Linux
 To build the `.exe` directly from a Linux machine, use `mingw-w64`:
 1. **Install Compiler Toolchain**:
    ```bash
