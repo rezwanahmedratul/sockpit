@@ -1,0 +1,9 @@
+// Resource script to embed the UAC manifest into the Windows .exe
+// This makes Windows auto-prompt for Administrator elevation
+
+#include "winuser.h"
+
+1 RT_MANIFEST "sockpit-agent.exe.manifest"
+
+// Application icon (optional, can be added later)
+// 1 ICON "sockpit.ico"

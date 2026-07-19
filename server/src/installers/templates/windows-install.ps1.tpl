@@ -77,9 +77,10 @@ if ($existingService) {
     Start-Sleep -Seconds 2
 }
 
-# Create the service using sc.exe (simplest service wrappers logic)
-sc.exe create $SERVICE_NAME binPath= "$AGENT_EXE --config-path `"$CONFIG_FILE`"" start= auto displayName= "SockPit SOCKS5 Agent" | Out-Null
-sc.exe description $SERVICE_NAME "SockPit SOCKS5 Proxy Agent - Managed proxy server" | Out-Null
+# Create the service using sc.exe with --service flag for Windows Service dispatcher mode
+sc.exe create $SERVICE_NAME binPath= "`"$AGENT_EXE`" --service --config-path `"$CONFIG_FILE`"" start= auto displayName= "SockPit SOCKS5 Agent" | Out-Null
+sc.exe description $SERVICE_NAME "SockPit SOCKS5 Proxy Agent - Managed proxy server running with highest privileges" | Out-Null
+sc.exe failure $SERVICE_NAME reset= 60 actions= restart/5000/restart/10000/restart/30000 | Out-Null
 
 # ---- Step 7: Configure firewall ----
 Write-Host "[7/8] Configuring firewall..." -ForegroundColor Yellow
