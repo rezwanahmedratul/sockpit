@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Build release binary
-RUN cargo build --release
+# Build release binary using exact locked dependencies
+RUN cargo build --release --locked
 
 # ---- Stage 2: Runtime ----
 FROM debian:bookworm-slim
