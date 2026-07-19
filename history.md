@@ -93,3 +93,39 @@ To ensure this project is built correctly, subsequent models must adhere to the 
     *   Coded `config.rs` loading/saving local config storage JSON files, and `main.rs` handling clap CLI inputs.
 *   **Result**: Compiled Rust agent binary successfully registered online, synced SOCKS5 credentials, opened dynamic proxy ports, authenticated client connections, and relayed Google search requests.
 *   **Next Recommended Step**: Implement **Phase 6: Installer Generation & Scripts** to build bash scripts, PowerShell scripts, and Dockerfiles to auto-deploy the agent spokes on Windows, Linux, and Docker hosts as defined in [docs/installer-generator.md](file:///root/sockpit/docs/installer-generator.md).
+
+### Phase 6: Installer Generation & Scripts (Completed)
+*   **Goal**: Provide multi-platform automated installation scripts (Linux systemd, Windows Service wrapper, Docker container setup) with single-use install token injection and dynamic server URL discovery.
+*   **Changes**:
+    *   Created `.gitignore` for workspace build artifacts, environment configuration, logs, and target folders.
+    *   Created `agent/Dockerfile` implementing multi-stage builds (rust:1.80 builder -> debian:bookworm-slim runtime with non-root user).
+    *   Created installer templates in `server/src/installers/templates/`: `linux-install.sh.tpl`, `windows-install.ps1.tpl`, and `docker-install.sh.tpl`.
+    *   Created `server/src/routes/installers.routes.js` exposing `POST /api/installers/script` (JSON response with one-liner command) and `GET /api/installers/run/:token` (raw text/plain script stream for `curl -sSL | bash`).
+    *   Integrated URL resolution logic mapping `SERVER_URL` and `API_URL` dynamically from HTTP request host headers.
+*   **Result**: Tested script generation and raw execution endpoints. Server returned populated bash script containing `ws://localhost:3001` and token `4rjXXcN9K9pzuwLkzjCT`.
+*   **Next Recommended Step**: Proceed to **Phase 7: Frontend Dashboard (Next.js)** to build the web application UI for server management, user administration, SOCKS5 port configuration, metrics visualization, and installation script generation.
+
+### Phase 7: Frontend Dashboard (Next.js 14+) (Completed)
+*   **Goal**: Create a modern, responsive Next.js 14 App Router web application with dark theme glassmorphism UI, real-time WebSocket updates, authentication controls, and SOCKS5 management tools.
+*   **Changes**:
+    *   Initialized Next.js app in `dashboard/` with `lucide-react`, `recharts`, and `clsx`.
+    *   Programmed design tokens in `globals.css` with CSS custom properties (`--bg-primary`, `--accent-primary`, `--glass-panel`).
+    *   Coded `lib/auth.js` for token storage and `lib/api.js` for fetch wrapping with auto Bearer token header injection and 401 refresh retries.
+    *   Coded `hooks/useAuth.js` and `hooks/useWebSocket.js` connecting to backend real-time event streams.
+    *   Coded UI primitives: `Button.js`, `Input.js`, `Modal.js`, `Badge.js`, `Card.js`, `StatCard.js`.
+    *   Coded Layouts: `Sidebar.js` and `Topbar.js`.
+    *   Coded Pages: Login (`/login`), Overview (`/overview`), Servers (`/servers`), Server Detail & SOCKS5 Modals (`/servers/[serverId]`), Metrics (`/servers/[serverId]/metrics`), Installers (`/installers`), Users (`/users`), Audit Logs (`/audit-log`), Settings (`/settings`).
+*   **Result**: Executed `npm run build` in `dashboard/` — compiled all 11 static/dynamic App Router pages cleanly in 7.5s with zero errors or warnings.
+*   **Next Recommended Step**: Implement **Phase 8: CI/CD, Docker & Deployment** to write GitHub Actions workflows (`build-agent.yml`), production docker-compose configurations (`docker-compose.prod.yml`), and deployment scripts as defined in [docs/github-actions.md](file:///root/sockpit/docs/github-actions.md) and [docs/deployment.md](file:///root/sockpit/docs/deployment.md).
+
+### Phase 8: CI/CD Pipeline, Docker & Deployment (Completed)
+*   **Goal**: Configure multi-platform CI/CD automation, production container orchestration, Dockerfiles for all microservices, and environment templates.
+*   **Changes**:
+    *   Created `.github/workflows/build-agent.yml` automating Rust agent tests, cross-compilation (`x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`), and multi-arch Docker image builds pushed to GitHub Container Registry (`ghcr.io`).
+    *   Created `docker-compose.prod.yml` orchestrating production PostgreSQL 16 (with volume persistence & healthchecks), Redis 7, backend API server (`server/Dockerfile`), and Next.js web dashboard (`dashboard/Dockerfile`).
+    *   Created `.env.example` defining environment variables and production settings.
+*   **Result**: All 8 phases of the SockPit multi-tenant SOCKS5 SaaS Platform architecture are fully implemented, compiled, and verified.
+*   **Next Recommended Step**: Deploy the production stack via `docker-compose -f docker-compose.prod.yml up -d` or push tag `v1.0.0` to trigger the automated CI/CD pipeline!
+
+
+

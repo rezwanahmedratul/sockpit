@@ -1,0 +1,73 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sockpit-postgres-prod
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sockpit}
+      POSTGRES_USER: ${POSTGRES_USER:-sockpit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sockpit_secure_pass}
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-sockpit} -d $${POSTGRES_DB:-sockpit}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: sockpit-redis-prod
+    restart: always
+    volumes:
+      - redisdata_prod:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: sockpit-server-prod
+    restart: always
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      PORT: 3000
+      WS_PORT: 3001
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sockpit}:${POSTGRES_PASSWORD:-sockpit_secure_pass}@postgres:5432/${POSTGRES_DB:-sockpit}?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3002}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: sockpit-dashboard-prod
+    restart: always
+    ports:
+      - "3002:3002"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000/api}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}
+    depends_on:
+      - server
+
+volumes:
+  pgdata_prod:
+  redisdata_prod:
