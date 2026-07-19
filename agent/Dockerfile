@@ -1,8 +1,8 @@
 # ---- Stage 1: Build ----
-FROM rust:1.85-slim AS builder
+FROM rust:latest AS builder
 
 WORKDIR /build
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock* ./
 COPY src/ ./src/
 
 # Install build dependencies (needed for native-tls / pkg-config if any, but since we compile with rustls, we don't strictly need them)
