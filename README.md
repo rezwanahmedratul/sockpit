@@ -338,6 +338,7 @@ docker run -d \
 ```
 sockpit/
 ├── README.md                          # Master project documentation
+├── LICENSE                            # MIT License definition
 ├── DEPLOYMENT.md                      # Comprehensive production deployment guide
 ├── guide.md                           # Compilation & Windows binary build guide
 ├── history.md                         # Project development history & changelog
@@ -378,4 +379,17 @@ sockpit/
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is open-source software licensed under the [**MIT License**](LICENSE).
+
+```text
+Copyright (c) 2026 rezwanahmedratul
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions...
+```
+
+See the full text in the [LICENSE](file:///root/sockpit/LICENSE) file.

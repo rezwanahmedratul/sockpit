@@ -54,16 +54,16 @@ router.post('/script', authenticateJWT, validate(generateScriptSchema), async (r
 
     let template = fs.readFileSync(templatePath, 'utf8');
 
-    // Dynamically resolve server URLs using host headers
-    const host = req.headers.host || 'localhost:3000';
+    // Dynamically resolve server URLs using host headers and environment variables
+    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000';
     const isLocal = host.includes('localhost') || host.includes('127.0.0.1') || host.includes('192.168.') || host.includes('10.');
-    const protocol = req.secure ? 'https' : 'http';
-    const wsProtocol = req.secure ? 'wss' : 'ws';
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const wsProtocol = protocol === 'https' ? 'wss' : 'ws';
     
     // API URL is the HTTP server host
     const apiUrl = `${protocol}://${host}`;
-    // WebSocket URL is on WS_PORT (3001)
-    const wsUrl = `${wsProtocol}://${host.split(':')[0]}:${env.WS_PORT}`;
+    // WebSocket URL prefers configured WS_URL / NEXT_PUBLIC_WS_URL if set
+    const wsUrl = env.WS_URL || process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}://${host.split(':')[0]}:${env.WS_PORT}`;
 
     // 4. Render template
     const rendered = template

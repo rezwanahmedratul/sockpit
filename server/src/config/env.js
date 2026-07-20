@@ -12,6 +12,7 @@ const envSchema = z.object({
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   AGENT_DOWNLOAD_BASE_URL: z.string().url().default('https://your-domain.com/downloads'),
   DASHBOARD_URL: z.string().url().default('https://your-domain.com'),
+  WS_URL: z.string().optional(),
   ENCRYPTION_KEY: z.string().length(62).or(z.string().length(64)), // 32-byte hex key (64 characters)
 });
 

@@ -254,7 +254,7 @@ impl WebSocketClient {
                     metrics_handle.abort();
                 }
                 Err(e) => {
-                    error!("Connection connection failed: {}. Retrying in 10s...", e);
+                    error!("WebSocket connection failed: {}. Retrying in 10s...", e);
                     sleep(Duration::from_secs(10)).await;
                 }
             }
