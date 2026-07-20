@@ -1,24 +1,23 @@
-# SockPit — Linux VPS Deployment Guide
+# SockPit — Deployment Guide
 
-> Deploy the full SockPit stack (API Server, WebSocket Hub, Dashboard, PostgreSQL, Redis) on a Linux VPS with SSL, Nginx reverse proxy, and firewall — all automated with a single script.
+> Deploy the SockPit stack (API Server, WebSocket Hub, Dashboard, PostgreSQL, Redis) on a Linux VPS or LXC container. This guide assumes you manage your own reverse proxy (e.g., Pangolin, Nginx Proxy Manager, Traefik, Caddy) and will point a domain to SockPit's IP address yourself.
 
 ---
 
 ## Table of Contents
 
 1. [Prerequisites](#1-prerequisites)
-2. [VPS Requirements](#2-vps-requirements)
+2. [System Requirements](#2-system-requirements)
 3. [Quick Deploy (Automated Script)](#3-quick-deploy-automated-script)
 4. [What the Script Does](#4-what-the-script-does)
-5. [DNS Configuration](#5-dns-configuration)
-6. [Post-Deployment](#6-post-deployment)
+5. [Post-Deployment](#5-post-deployment)
+6. [Reverse Proxy Configuration](#6-reverse-proxy-configuration)
 7. [Manual Deployment (Step-by-Step)](#7-manual-deployment-step-by-step)
 8. [Firewall Configuration](#8-firewall-configuration)
-9. [SSL Certificate Renewal](#9-ssl-certificate-renewal)
-10. [Updating SockPit](#10-updating-sockpit)
-11. [Backup & Restore](#11-backup--restore)
-12. [Monitoring & Logs](#12-monitoring--logs)
-13. [Troubleshooting](#13-troubleshooting)
+9. [Updating SockPit](#9-updating-sockpit)
+10. [Backup & Restore](#10-backup--restore)
+11. [Monitoring & Logs](#11-monitoring--logs)
+12. [Troubleshooting](#12-troubleshooting)
 
 ---
 
@@ -30,42 +29,42 @@
 | **RAM** | 2 GB (4 GB recommended) |
 | **CPU** | 1 vCPU (2 recommended) |
 | **Disk** | 20 GB SSD |
-| **Network** | Public IPv4 address |
-| **Domain** | A domain or subdomain you control |
-| **GitHub Access** | SSH key or personal access token (repo is private) |
+| **Network** | Reachable IP address (public VPS or LAN for homelab LXC) |
+| **GitHub Access** | SSH key or personal access token (if repo is private) |
 
 > [!IMPORTANT]
-> You must have **root** or **sudo** access to the VPS.
+> You must have **root** or **sudo** access to the VPS or LXC container.
 
 ---
 
-## 2. VPS Requirements
+## 2. System Requirements
 
 The script supports and has been tested on:
 
 - **Ubuntu 22.04 LTS** / **Ubuntu 24.04 LTS**
 - **Debian 12 (Bookworm)**
+- **Proxmox LXC containers** (Debian/Ubuntu based)
 
 The following software will be **automatically installed** by the script if not already present:
 
 - Docker Engine & Docker Compose v2
-- Nginx
-- Certbot (Let's Encrypt)
 - Git
-- UFW (firewall)
 - OpenSSL (for generating secrets)
+
+> [!NOTE]
+> **No reverse proxy, Nginx, Certbot, or SSL tooling is installed.** You are expected to handle domain routing and SSL termination via your own proxy manager (e.g., Pangolin, Nginx Proxy Manager, Traefik, Caddy).
 
 ---
 
 ## 3. Quick Deploy (Automated Script)
 
-### Step 1: SSH into your VPS
+### Step 1: SSH into your VPS or LXC container
 
 ```bash
 ssh root@YOUR_SERVER_IP
 ```
 
-### Step 2: Download and run the install script
+### Step 2: Clone and run the installer
 
 ```bash
 # Clone the repository (private — you'll need credentials)
@@ -78,37 +77,24 @@ sudo /opt/sockpit/install.sh
 
 The script will interactively ask you for:
 
-1. **Your domain name** (e.g., `panel.yourdomain.com`)
-2. **Your email** (for Let's Encrypt SSL certificate notifications)
+1. **Your domain name** (e.g., `panel.yourdomain.com`) — used to set API/WebSocket/Dashboard URLs in the `.env` file.
 
-### Step 3: Point your domain to the server
+### Step 3: Point your domain
 
-After entering your domain, the script will **pause** and display your server's public IP address. At this point:
+After the script finishes, configure your external reverse proxy (Pangolin, NPM, etc.) to route traffic:
 
-1. Go to your **domain registrar / DNS hosting provider** (Cloudflare, Namecheap, GoDaddy, etc.)
-2. Create an **A record** pointing your domain to your server IP:
+| Service | Internal Target | Purpose |
+|---------|----------------|---------|
+| `/` (default) | `http://SERVER_IP:3002` | Next.js Dashboard |
+| `/api/` | `http://SERVER_IP:3000` | REST API |
+| `/ws/` or WebSocket | `http://SERVER_IP:3001` | Agent WebSocket (must support Upgrade headers) |
 
-   | Type | Name | Value | TTL |
-   |------|------|-------|-----|
-   | A | `panel` (or `@` for root domain) | `YOUR_SERVER_IP` | 300 (5 min) |
-
-3. Wait for DNS propagation (usually 1–5 minutes)
-4. Press **Enter** in the terminal to continue
-
-> [!TIP]
-> If using **Cloudflare**, temporarily set the proxy status to **DNS only** (grey cloud) during setup. You can enable the orange cloud proxy later after SSL is configured.
+> [!IMPORTANT]
+> The WebSocket endpoint **must** have `Connection: Upgrade` and `Upgrade: websocket` headers forwarded. Without this, agents cannot connect.
 
 ### Step 4: Done!
 
-The script will:
-- Obtain an SSL certificate via Let's Encrypt
-- Configure Nginx as a reverse proxy
-- Build and start all Docker containers
-- Run database migrations
-- Seed the default admin user
-- Configure the firewall
-
-Your SockPit instance will be live at: **`https://YOUR_DOMAIN`**
+Your SockPit instance will be accessible at your configured domain.
 
 ---
 
@@ -119,73 +105,28 @@ Here's everything the installation script automates:
 ```
 1. System Update & Dependency Installation
    ├── Updates apt packages
-   ├── Installs Docker, Docker Compose, Nginx, Certbot, Git, UFW
+   ├── Installs Docker, Docker Compose, Git, OpenSSL
    └── Enables Docker service
 
 2. Security & Secrets Generation
    ├── Generates random JWT_SECRET (64 chars)
    ├── Generates random ENCRYPTION_KEY (64 hex chars)
    ├── Generates random PostgreSQL password
-   └── Creates .env from template
+   └── Creates .env from inputs
 
-3. DNS Verification Pause
-   ├── Displays server public IP
-   ├── Instructs user to create A record
-   └── Waits for user confirmation
-
-4. SSL Certificate (Let's Encrypt)
-   ├── Runs certbot in standalone mode
-   └── Obtains certificate for the domain
-
-5. Nginx Reverse Proxy Setup
-   ├── Dashboard → port 3002
-   ├── API (/api/) → port 3000
-   ├── WebSocket (/ws/) → port 3001
-   ├── Downloads (/downloads/) → static files
-   └── HTTP → HTTPS redirect
-
-6. Docker Stack Deployment
+3. Docker Stack Deployment
    ├── Builds server and dashboard images
    ├── Starts PostgreSQL, Redis, Server, Dashboard
    └── Waits for health checks
 
-7. Database Initialization
+4. Database Initialization
    ├── Runs all migrations
    └── Seeds default admin user
-
-8. Firewall Configuration
-   ├── Allows SSH (22)
-   ├── Allows HTTP (80)
-   ├── Allows HTTPS (443)
-   └── Denies everything else by default
-
-9. SSL Auto-Renewal
-   └── Certbot auto-renewal is enabled by default
 ```
 
 ---
 
-## 5. DNS Configuration
-
-### Required DNS Records
-
-| Type | Name | Value | Purpose |
-|------|------|-------|---------|
-| **A** | `your-domain.com` or subdomain | Server IP | Points domain to your VPS |
-
-### Optional (if using subdomains for API/WS separately)
-
-| Type | Name | Value | Purpose |
-|------|------|-------|---------|
-| A | `api.your-domain.com` | Server IP | Dedicated API subdomain |
-| A | `ws.your-domain.com` | Server IP | Dedicated WebSocket subdomain |
-
-> [!NOTE]
-> The default Nginx configuration serves everything under a **single domain**. API routes are under `/api/`, WebSocket under `/ws/`, and the dashboard at `/`. Separate subdomains are optional and require manual Nginx edits.
-
----
-
-## 6. Post-Deployment
+## 5. Post-Deployment
 
 ### Default Admin Credentials
 
@@ -195,7 +136,7 @@ Here's everything the installation script automates:
 | **Password** | `changeme123` |
 
 > [!CAUTION]
-> **Change the default admin password immediately** after your first login at `https://YOUR_DOMAIN`.
+> **Change the default admin password immediately** after your first login.
 
 ### Verify the deployment
 
@@ -203,14 +144,74 @@ Here's everything the installation script automates:
 # Check all containers are running
 docker compose -f /opt/sockpit/docker-compose.prod.yml ps
 
-# Test the API health endpoint
-curl https://YOUR_DOMAIN/api/health
-
-# Check Nginx status
-sudo systemctl status nginx
+# Test the API health endpoint (from the server itself)
+curl http://localhost:3000/api/health
 
 # View server logs
 docker compose -f /opt/sockpit/docker-compose.prod.yml logs -f server
+```
+
+---
+
+## 6. Reverse Proxy Configuration
+
+SockPit does **not** manage its own reverse proxy. You must configure routing in your own proxy manager.
+
+### Exposed Ports
+
+| Port | Service | Protocol |
+|------|---------|----------|
+| `3000` | REST API Server | HTTP |
+| `3001` | WebSocket Hub | HTTP + WebSocket Upgrade |
+| `3002` | Next.js Dashboard | HTTP |
+
+### Routing Rules (for Pangolin / NPM / Traefik / Caddy)
+
+Point your domain (e.g. `panel.yourdomain.com`) to your server's IP and configure these routes:
+
+| Path / Location | Upstream Target | Notes |
+|-----------------|-----------------|-------|
+| `/` (default) | `http://SERVER_IP:3002` | Dashboard (Next.js) |
+| `/api/*` | `http://SERVER_IP:3000` | REST API |
+| WebSocket / `/ws/*` | `http://SERVER_IP:3001` | **Must** forward `Upgrade` and `Connection` headers, set read timeout to `86400s` |
+
+### WebSocket Proxy Requirements
+
+The agent WebSocket connection is **persistent and long-lived** (heartbeat every 30s). Your proxy **must**:
+
+1. Forward `Upgrade: websocket` and `Connection: upgrade` headers.
+2. Set a long read/write timeout (at minimum `86400` seconds / 24 hours).
+3. Not buffer responses.
+
+### Example: Pangolin
+
+In Pangolin, create a new site pointing to your SockPit server's IP. Add three upstream targets for ports `3000`, `3001`, and `3002`. Enable WebSocket support for the port `3001` target.
+
+### Example: Nginx Proxy Manager (NPM)
+
+Create a Proxy Host for your domain:
+- **Domain**: `panel.yourdomain.com`
+- **Forward Hostname / IP**: `YOUR_SERVER_IP`
+- **Forward Port**: `3002`
+- Enable **WebSockets Support**
+- Under **Advanced**, add custom Nginx configuration for API and WS routing.
+
+### Example: Caddy (Caddyfile)
+
+```
+panel.yourdomain.com {
+    handle /api/* {
+        reverse_proxy SERVER_IP:3000
+    }
+
+    handle /ws/* {
+        reverse_proxy SERVER_IP:3001
+    }
+
+    handle {
+        reverse_proxy SERVER_IP:3002
+    }
+}
 ```
 
 ---
@@ -223,14 +224,11 @@ If you prefer to deploy manually instead of using the script:
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y ca-certificates curl gnupg git ufw
+sudo apt install -y ca-certificates curl gnupg git openssl
 
 # Install Docker
 curl -fsSL https://get.docker.com | sh
 sudo systemctl enable --now docker
-
-# Install Nginx & Certbot
-sudo apt install -y nginx certbot python3-certbot-nginx
 ```
 
 ### 7.2 Clone the Repository
@@ -255,10 +253,10 @@ WS_PORT=3001
 NODE_ENV=production
 
 # Database
-DATABASE_URL=postgresql://sockpit:YOUR_STRONG_DB_PASSWORD@postgres:5432/sockpit?sslmode=disable
+POSTGRES_DB=sockpit
 POSTGRES_USER=sockpit
 POSTGRES_PASSWORD=YOUR_STRONG_DB_PASSWORD
-POSTGRES_DB=sockpit
+DATABASE_URL=postgresql://sockpit:YOUR_STRONG_DB_PASSWORD@postgres:5432/sockpit?sslmode=disable
 
 # Redis
 REDIS_URL=redis://redis:6379
@@ -274,140 +272,62 @@ ENCRYPTION_KEY=YOUR_64_HEX_CHAR_KEY
 # URLs — replace with your actual domain
 DASHBOARD_URL=https://YOUR_DOMAIN
 AGENT_DOWNLOAD_BASE_URL=https://YOUR_DOMAIN/downloads
+
+# Dashboard Build-time Environment
 NEXT_PUBLIC_API_URL=https://YOUR_DOMAIN/api
 NEXT_PUBLIC_WS_URL=wss://YOUR_DOMAIN/ws
 ```
 
-### 7.4 Get SSL Certificate
-
-```bash
-sudo certbot certonly --standalone -d YOUR_DOMAIN --agree-tos -m your@email.com
-```
-
-### 7.5 Configure Nginx
-
-Create `/etc/nginx/sites-available/sockpit`:
-
-```nginx
-server {
-    listen 80;
-    server_name YOUR_DOMAIN;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name YOUR_DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/YOUR_DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/YOUR_DOMAIN/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-
-    # Dashboard
-    location / {
-        proxy_pass http://127.0.0.1:3002;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # API
-    location /api/ {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # WebSocket
-    location /ws/ {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }
-
-    # Agent binary downloads
-    location /downloads/ {
-        alias /opt/sockpit/downloads/;
-        autoindex off;
-    }
-}
-```
-
-Enable the site:
-
-```bash
-sudo ln -s /etc/nginx/sites-available/sockpit /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-### 7.6 Build & Start Docker Containers
+### 7.4 Build & Start Docker Containers
 
 ```bash
 cd /opt/sockpit
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-### 7.7 Run Migrations & Seed Admin
+### 7.5 Run Migrations & Seed Admin
 
 ```bash
 docker compose -f docker-compose.prod.yml exec server npx node-pg-migrate up --migrations-dir migrations
 docker compose -f docker-compose.prod.yml exec server node src/seeds/001_admin_user.js
 ```
 
-### 7.8 Configure Firewall
+### 7.6 Configure Your Reverse Proxy
 
-```bash
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow 22/tcp    # SSH
-sudo ufw allow 80/tcp    # HTTP
-sudo ufw allow 443/tcp   # HTTPS
-sudo ufw --force enable
-```
+Point your domain to the server IP in your external proxy manager and configure routes as described in [Section 6](#6-reverse-proxy-configuration).
 
 ---
 
 ## 8. Firewall Configuration
 
-The install script configures UFW with sensible defaults. If agents connect via SOCKS5 through specific ports, you may need to open additional ports:
+If your VPS has a firewall (UFW), allow the required ports:
 
 ```bash
-# Open a SOCKS5 port range (if agents expose ports directly)
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp     # SSH
+sudo ufw allow 3000/tcp   # API Server
+sudo ufw allow 3001/tcp   # WebSocket Hub
+sudo ufw allow 3002/tcp   # Dashboard
+sudo ufw --force enable
+```
+
+> [!TIP]
+> If your reverse proxy runs on the **same machine**, you can keep ports 3000–3002 closed to the public and only allow `localhost` access. If it runs externally (e.g., Pangolin on another server), these ports must be reachable from the proxy.
+
+If agents expose SOCKS5 ports directly on this machine, open them too:
+
+```bash
+# Example: open a SOCKS5 port range
 sudo ufw allow 10000:20000/tcp
-
-# Check firewall status
-sudo ufw status verbose
 ```
+
+> [!NOTE]
+> **Homelab LXC Note**: If running inside a Proxmox LXC container, the host firewall (Proxmox Firewall or iptables on the host) controls inbound access. UFW inside the container may not be necessary — check your Proxmox network configuration.
 
 ---
 
-## 9. SSL Certificate Renewal
-
-Let's Encrypt certificates are valid for 90 days. Certbot sets up automatic renewal via a systemd timer. Verify it's working:
-
-```bash
-# Check timer
-sudo systemctl list-timers | grep certbot
-
-# Dry-run renewal test
-sudo certbot renew --dry-run
-
-# The renewal hook restarts Nginx automatically
-```
-
----
-
-## 10. Updating SockPit
+## 9. Updating SockPit
 
 To update to the latest version:
 
@@ -429,7 +349,7 @@ docker compose -f docker-compose.prod.yml ps
 
 ---
 
-## 11. Backup & Restore
+## 10. Backup & Restore
 
 ### Backup PostgreSQL
 
@@ -456,7 +376,7 @@ gunzip < ~/sockpit-backup-YYYYMMDD.sql.gz | docker compose -f /opt/sockpit/docke
 
 ---
 
-## 12. Monitoring & Logs
+## 11. Monitoring & Logs
 
 ### View Container Logs
 
@@ -480,12 +400,12 @@ docker stats --no-stream
 ### Health Check
 
 ```bash
-curl -s https://YOUR_DOMAIN/api/health | jq .
+curl -s http://localhost:3000/api/health | jq .
 ```
 
 ---
 
-## 13. Troubleshooting
+## 12. Troubleshooting
 
 ### Containers won't start
 
@@ -496,15 +416,6 @@ docker compose -f /opt/sockpit/docker-compose.prod.yml logs server
 # Common fix: rebuild from scratch
 docker compose -f /opt/sockpit/docker-compose.prod.yml down
 docker compose -f /opt/sockpit/docker-compose.prod.yml up -d --build --force-recreate
-```
-
-### SSL certificate issues
-
-```bash
-# Make sure port 80 is open and Nginx is stopped during cert provisioning
-sudo systemctl stop nginx
-sudo certbot certonly --standalone -d YOUR_DOMAIN
-sudo systemctl start nginx
 ```
 
 ### Database connection errors
@@ -520,23 +431,34 @@ docker compose -f /opt/sockpit/docker-compose.prod.yml exec server env | grep DA
 ### WebSocket connection failures
 
 ```bash
-# Ensure Nginx is proxying WebSocket upgrade headers
-sudo nginx -t
-
-# Test WebSocket endpoint
+# Test WebSocket endpoint directly (bypassing proxy)
 curl -i -N \
   -H "Connection: Upgrade" \
   -H "Upgrade: websocket" \
   -H "Sec-WebSocket-Version: 13" \
   -H "Sec-WebSocket-Key: test" \
-  https://YOUR_DOMAIN/ws/
+  http://localhost:3001/
+
+# If this works but your domain doesn't, the issue is in your reverse proxy config.
+# Ensure WebSocket upgrade headers are being forwarded.
 ```
 
 ### Port conflicts
 
 ```bash
 # Check what's using the ports
-sudo ss -tlnp | grep -E '3000|3001|3002|80|443'
+sudo ss -tlnp | grep -E '3000|3001|3002'
+```
+
+### LXC container-specific issues
+
+```bash
+# If Docker fails to start inside an LXC container, ensure the container is
+# configured as "privileged" or has the required AppArmor/nesting features enabled.
+# In Proxmox, check: Options → Features → nesting=1, keyctl=1
+
+# Verify Docker works
+docker run --rm hello-world
 ```
 
 ### Reset everything

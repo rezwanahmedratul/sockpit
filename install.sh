@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 #
-# SockPit — Automated Linux VPS Installation Script
-# Deploys the full SockPit stack with SSL, Nginx, Docker, PostgreSQL & Redis
+# SockPit — Automated Installation Script
+# Deploys the SockPit stack with Docker, PostgreSQL & Redis
+#
+# This script does NOT install or configure any reverse proxy, SSL, or firewall.
+# You are expected to handle domain routing and SSL via your own proxy manager
+# (e.g., Pangolin, Nginx Proxy Manager, Traefik, Caddy).
 #
 # Usage:
 #   chmod +x install.sh
@@ -26,8 +30,6 @@ INSTALL_DIR="/opt/sockpit"
 COMPOSE_FILE="docker-compose.prod.yml"
 DOWNLOADS_DIR="${INSTALL_DIR}/downloads"
 BACKUPS_DIR="${INSTALL_DIR}/backups"
-NGINX_CONF="/etc/nginx/sites-available/sockpit"
-NGINX_LINK="/etc/nginx/sites-enabled/sockpit"
 
 # ─── Helper Functions ───────────────────────────────────────────────────────────
 log_info()    { echo -e "${BLUE}[INFO]${NC}    $1"; }
@@ -98,14 +100,9 @@ check_os() {
     esac
 }
 
-get_public_ip() {
+get_local_ip() {
     local ip=""
-    # Try multiple services for reliability
-    ip=$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null) || \
-    ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null) || \
-    ip=$(curl -s --max-time 5 https://icanhazip.com 2>/dev/null) || \
-    ip=$(hostname -I | awk '{print $1}')
-
+    ip=$(hostname -I | awk '{print $1}') || ip="unknown"
     echo "$ip"
 }
 
@@ -125,7 +122,7 @@ generate_password() {
 # ─── Main Installation Steps ────────────────────────────────────────────────────
 
 install_dependencies() {
-    log_step "Step 1/9: Installing System Dependencies"
+    log_step "Step 1/5: Installing System Dependencies"
 
     log_info "Updating system packages..."
     apt-get update -qq
@@ -137,7 +134,6 @@ install_dependencies() {
         curl \
         gnupg \
         git \
-        ufw \
         openssl \
         jq \
         lsb-release \
@@ -148,7 +144,7 @@ install_dependencies() {
 }
 
 install_docker() {
-    log_step "Step 2/9: Installing Docker"
+    log_step "Step 2/5: Installing Docker"
 
     if command -v docker &>/dev/null; then
         log_success "Docker is already installed: $(docker --version)"
@@ -171,32 +167,11 @@ install_docker() {
     fi
 }
 
-install_nginx() {
-    log_step "Step 3/9: Installing Nginx & Certbot"
-
-    if command -v nginx &>/dev/null; then
-        log_success "Nginx is already installed"
-    else
-        log_info "Installing Nginx..."
-        apt-get install -y -qq nginx
-        log_success "Nginx installed"
-    fi
-
-    if command -v certbot &>/dev/null; then
-        log_success "Certbot is already installed"
-    else
-        log_info "Installing Certbot..."
-        apt-get install -y -qq certbot python3-certbot-nginx
-        log_success "Certbot installed"
-    fi
-
-    systemctl enable nginx
-}
-
 prompt_domain() {
-    log_step "Step 4/9: Domain Configuration"
+    log_step "Step 3/5: Domain Configuration"
 
-    echo -e "${BOLD}Enter your domain name${NC} (e.g., panel.yourdomain.com or sockpit.example.com):"
+    echo -e "${BOLD}Enter the domain name${NC} that you will point to this server via your reverse proxy"
+    echo -e "(e.g., panel.yourdomain.com or sockpit.example.com):"
     echo ""
     read -rp "  Domain: " DOMAIN
 
@@ -212,215 +187,32 @@ prompt_domain() {
 
     log_success "Domain set to: ${BOLD}${DOMAIN}${NC}"
 
-    echo ""
-    echo -e "${BOLD}Enter your email address${NC} (for Let's Encrypt SSL certificate notifications):"
-    echo ""
-    read -rp "  Email: " CERT_EMAIL
-
-    if [[ -z "$CERT_EMAIL" ]]; then
-        log_error "Email cannot be empty."
-        exit 1
-    fi
-
-    log_success "Email set to: ${CERT_EMAIL}"
-}
-
-wait_for_dns() {
-    local PUBLIC_IP
-    PUBLIC_IP=$(get_public_ip)
+    local LOCAL_IP
+    LOCAL_IP=$(get_local_ip)
 
     echo ""
     echo -e "${YELLOW}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}${BOLD}║                    ACTION REQUIRED                           ║${NC}"
+    echo -e "${YELLOW}${BOLD}║                    PROXY CONFIGURATION                       ║${NC}"
     echo -e "${YELLOW}${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}  Point your domain to this server's IP address:              ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  After installation, point your domain in your proxy          ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  manager (Pangolin, NPM, Traefik, etc.) to this server:       ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}    Domain:    ${CYAN}${BOLD}${DOMAIN}${NC}                    ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}    Server IP: ${GREEN}${BOLD}${PUBLIC_IP}${NC}                             ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}    Server IP: ${GREEN}${BOLD}${LOCAL_IP}${NC}                             ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}  Go to your DNS provider and create an A record:             ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  Route:  /       → http://${LOCAL_IP}:3002  (Dashboard)        ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  Route:  /api/   → http://${LOCAL_IP}:3000  (API)              ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  Route:  /ws/    → http://${LOCAL_IP}:3001  (WebSocket)        ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}    Type: ${BOLD}A${NC}                                                    ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}    Name: ${BOLD}${DOMAIN}${NC} (or @ for root)               ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}    Value: ${BOLD}${PUBLIC_IP}${NC}                                        ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}    TTL: ${BOLD}300${NC} (5 minutes)                                      ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  ⚠ WebSocket route MUST forward Upgrade headers!             ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-
-    # Wait for the user to configure DNS
-    echo -e "${BOLD}After creating the DNS record, press Enter to continue...${NC}"
-    read -r
-
-    # Verify DNS resolution
-    log_info "Verifying DNS resolution for ${DOMAIN}..."
-
-    local max_retries=12
-    local retry=0
-    local resolved_ip=""
-
-    while [[ $retry -lt $max_retries ]]; do
-        resolved_ip=$(dig +short "$DOMAIN" A 2>/dev/null | head -n1) || true
-
-        if [[ "$resolved_ip" == "$PUBLIC_IP" ]]; then
-            log_success "DNS is correctly pointing to this server (${resolved_ip})"
-            return 0
-        fi
-
-        retry=$((retry + 1))
-
-        if [[ $retry -lt $max_retries ]]; then
-            log_warn "DNS not yet resolved (got: '${resolved_ip:-none}', expected: '${PUBLIC_IP}'). Retrying in 10s... (${retry}/${max_retries})"
-            sleep 10
-        fi
-    done
-
-    log_warn "DNS verification timed out. The domain may not be pointing to this server yet."
-    echo -e "${YELLOW}Do you want to continue anyway? (y/N):${NC}"
-    read -rp "  " continue_anyway
-
-    if [[ "${continue_anyway,,}" != "y" && "${continue_anyway,,}" != "yes" ]]; then
-        log_error "Aborting. Please configure DNS and run the script again."
-        exit 1
-    fi
-
-    log_warn "Continuing without DNS verification. SSL certificate may fail if DNS is not ready."
-}
-
-setup_ssl() {
-    log_step "Step 5/9: Obtaining SSL Certificate"
-
-    # Stop nginx temporarily so certbot can bind to port 80
-    systemctl stop nginx 2>/dev/null || true
-
-    log_info "Requesting SSL certificate from Let's Encrypt..."
-
-    if certbot certonly \
-        --standalone \
-        --non-interactive \
-        --agree-tos \
-        --email "$CERT_EMAIL" \
-        -d "$DOMAIN"; then
-        log_success "SSL certificate obtained for ${DOMAIN}"
-    else
-        log_error "Failed to obtain SSL certificate."
-        log_error "Make sure the domain points to this server and port 80 is open."
-        exit 1
-    fi
-}
-
-configure_nginx() {
-    log_step "Step 6/9: Configuring Nginx Reverse Proxy"
-
-    # Create downloads directory
-    mkdir -p "$DOWNLOADS_DIR"
-
-    # Write Nginx config
-    cat > "$NGINX_CONF" << NGINX_EOF
-# SockPit — Nginx Reverse Proxy Configuration
-# Auto-generated by install.sh on $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-
-# HTTP → HTTPS redirect
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${DOMAIN};
-
-    # Allow Let's Encrypt ACME challenges
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
-
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
-# HTTPS server
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name ${DOMAIN};
-
-    # SSL Configuration
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
-    ssl_prefer_server_ciphers off;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_session_tickets off;
-
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-
-    # Client body size (for file uploads if needed)
-    client_max_body_size 50M;
-
-    # Dashboard (Next.js)
-    location / {
-        proxy_pass http://127.0.0.1:3002;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_buffering off;
-    }
-
-    # API Server
-    location /api/ {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_buffering off;
-    }
-
-    # WebSocket endpoint for agents
-    location /ws/ {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }
-
-    # Agent binary downloads (static files)
-    location /downloads/ {
-        alias ${DOWNLOADS_DIR}/;
-        autoindex off;
-        expires 1h;
-        add_header Cache-Control "public, immutable";
-    }
-}
-NGINX_EOF
-
-    # Enable the site
-    ln -sf "$NGINX_CONF" "$NGINX_LINK"
-    rm -f /etc/nginx/sites-enabled/default
-
-    # Test and start Nginx
-    nginx -t
-    systemctl start nginx
-    systemctl reload nginx
-
-    log_success "Nginx configured and running"
 }
 
 setup_env() {
-    log_step "Step 7/9: Generating Secure Environment Configuration"
+    log_step "Step 4/5: Generating Secure Environment Configuration"
 
     local JWT_SECRET
     local ENCRYPTION_KEY
@@ -458,7 +250,7 @@ JWT_REFRESH_EXPIRES_IN=7d
 # SOCKS5 AES-256 Encryption Key (32-byte = 64 hex characters)
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
-# Public URLs
+# Public URLs — these are used for agent installer script generation
 DASHBOARD_URL=https://${DOMAIN}
 AGENT_DOWNLOAD_BASE_URL=https://${DOMAIN}/downloads
 
@@ -476,7 +268,7 @@ ENV_EOF
 }
 
 deploy_docker_stack() {
-    log_step "Step 8/9: Building & Starting Docker Containers"
+    log_step "Step 5/5: Building & Starting Docker Containers"
 
     cd "$INSTALL_DIR"
 
@@ -520,17 +312,10 @@ deploy_docker_stack() {
     echo ""
     docker compose -f "$COMPOSE_FILE" ps
     echo ""
-}
 
-initialize_database() {
-    log_step "Step 9/9: Initializing Database"
-
-    cd "$INSTALL_DIR"
-
-    # Wait a bit for the server to fully start
-    sleep 5
-
+    # Run database migrations and seed admin
     log_info "Running database migrations..."
+    sleep 5
     docker compose -f "$COMPOSE_FILE" exec -T server npx node-pg-migrate up --migrations-dir migrations 2>&1 || {
         log_warn "Migration command returned a non-zero exit code. This may be okay if migrations were already applied."
     }
@@ -543,44 +328,9 @@ initialize_database() {
     log_success "Database initialized"
 }
 
-configure_firewall() {
-    log_info "Configuring UFW firewall..."
-
-    ufw default deny incoming 2>/dev/null || true
-    ufw default allow outgoing 2>/dev/null || true
-    ufw allow 22/tcp 2>/dev/null || true    # SSH
-    ufw allow 80/tcp 2>/dev/null || true    # HTTP
-    ufw allow 443/tcp 2>/dev/null || true   # HTTPS
-
-    # Enable firewall non-interactively
-    ufw --force enable 2>/dev/null || true
-
-    log_success "Firewall configured (SSH, HTTP, HTTPS allowed)"
-}
-
-setup_certbot_renewal() {
-    log_info "Setting up SSL certificate auto-renewal..."
-
-    # Create a renewal hook to reload nginx
-    mkdir -p /etc/letsencrypt/renewal-hooks/deploy
-
-    cat > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh << 'HOOK_EOF'
-#!/bin/bash
-systemctl reload nginx
-HOOK_EOF
-
-    chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
-
-    # Verify the certbot timer is active
-    systemctl enable certbot.timer 2>/dev/null || true
-    systemctl start certbot.timer 2>/dev/null || true
-
-    log_success "Certbot auto-renewal configured"
-}
-
 print_summary() {
-    local PUBLIC_IP
-    PUBLIC_IP=$(get_public_ip)
+    local LOCAL_IP
+    LOCAL_IP=$(get_local_ip)
 
     echo ""
     echo -e "${GREEN}${BOLD}"
@@ -593,17 +343,29 @@ print_summary() {
 DONE
     echo -e "${NC}"
 
-    echo -e "  ${BOLD}Dashboard URL:${NC}        ${CYAN}https://${DOMAIN}${NC}"
-    echo -e "  ${BOLD}API Endpoint:${NC}         ${CYAN}https://${DOMAIN}/api${NC}"
-    echo -e "  ${BOLD}WebSocket Endpoint:${NC}   ${CYAN}wss://${DOMAIN}/ws${NC}"
-    echo -e "  ${BOLD}Health Check:${NC}         ${CYAN}https://${DOMAIN}/api/health${NC}"
-    echo -e "  ${BOLD}Server IP:${NC}            ${GREEN}${PUBLIC_IP}${NC}"
+    echo -e "  ${BOLD}Server IP:${NC}            ${GREEN}${LOCAL_IP}${NC}"
+    echo ""
+    echo -e "  ${BOLD}─── Exposed Ports ───${NC}"
+    echo -e "  Dashboard:          ${CYAN}http://${LOCAL_IP}:3002${NC}"
+    echo -e "  API Server:         ${CYAN}http://${LOCAL_IP}:3000${NC}"
+    echo -e "  WebSocket Hub:      ${CYAN}http://${LOCAL_IP}:3001${NC}"
+    echo ""
+    echo -e "  ${BOLD}─── After Proxy Setup ───${NC}"
+    echo -e "  Dashboard URL:      ${CYAN}https://${DOMAIN}${NC}"
+    echo -e "  API Endpoint:       ${CYAN}https://${DOMAIN}/api${NC}"
+    echo -e "  WebSocket Endpoint: ${CYAN}wss://${DOMAIN}/ws${NC}"
+    echo -e "  Health Check:       ${CYAN}http://${LOCAL_IP}:3000/api/health${NC}"
     echo ""
     echo -e "  ${BOLD}─── Default Admin Credentials ───${NC}"
-    echo -e "  ${BOLD}Email:${NC}    admin@sockpit.local"
-    echo -e "  ${BOLD}Password:${NC} changeme123"
+    echo -e "  Email:    admin@sockpit.local"
+    echo -e "  Password: changeme123"
     echo ""
     echo -e "  ${RED}${BOLD}⚠  IMPORTANT: Change the default admin password immediately!${NC}"
+    echo ""
+    echo -e "  ${BOLD}─── Next Step ───${NC}"
+    echo -e "  Point your domain ${CYAN}${DOMAIN}${NC} to ${GREEN}${LOCAL_IP}${NC}"
+    echo -e "  in your reverse proxy manager (Pangolin, NPM, etc.)"
+    echo -e "  and route /api/ → :3000, /ws/ → :3001, / → :3002"
     echo ""
     echo -e "  ${BOLD}─── Useful Commands ───${NC}"
     echo -e "  View logs:        ${CYAN}docker compose -f ${INSTALL_DIR}/${COMPOSE_FILE} logs -f${NC}"
@@ -614,8 +376,6 @@ DONE
     echo -e "  ${BOLD}─── File Locations ───${NC}"
     echo -e "  Install directory: ${INSTALL_DIR}"
     echo -e "  Environment file:  ${INSTALL_DIR}/.env"
-    echo -e "  Nginx config:      ${NGINX_CONF}"
-    echo -e "  SSL certificates:  /etc/letsencrypt/live/${DOMAIN}/"
     echo -e "  Downloads dir:     ${DOWNLOADS_DIR}"
     echo -e "  Backups dir:       ${BACKUPS_DIR}"
     echo ""
@@ -647,16 +407,9 @@ main() {
 
     install_dependencies
     install_docker
-    install_nginx
     prompt_domain
-    wait_for_dns
-    setup_ssl
-    configure_nginx
     setup_env
     deploy_docker_stack
-    initialize_database
-    configure_firewall
-    setup_certbot_renewal
     print_summary
 }
 
