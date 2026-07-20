@@ -1,17 +1,17 @@
 # SockPit — Deployment Guide
 
-> Deploy the SockPit stack (API Server, WebSocket Hub, Dashboard, PostgreSQL, Redis) on a Linux VPS or LXC container. This guide assumes you manage your own reverse proxy (e.g., Pangolin, Nginx Proxy Manager, Traefik, Caddy) and will point a domain to SockPit's IP address yourself.
+> Deploy the SockPit stack (API Server, WebSocket Hub, Dashboard, PostgreSQL, Redis) on a Linux VPS or LXC container. Each service gets its own dedicated subdomain.
 
 ---
 
 ## Table of Contents
 
-1. [Prerequisites](#1-prerequisites)
+1. [Architecture Overview](#1-architecture-overview)
 2. [System Requirements](#2-system-requirements)
 3. [Quick Deploy (Automated Script)](#3-quick-deploy-automated-script)
-4. [What the Script Does](#4-what-the-script-does)
+4. [Proxy Modes](#4-proxy-modes)
 5. [Post-Deployment](#5-post-deployment)
-6. [Reverse Proxy Configuration](#6-reverse-proxy-configuration)
+6. [External Proxy Configuration](#6-external-proxy-configuration)
 7. [Manual Deployment (Step-by-Step)](#7-manual-deployment-step-by-step)
 8. [Firewall Configuration](#8-firewall-configuration)
 9. [Updating SockPit](#9-updating-sockpit)
@@ -21,7 +21,41 @@
 
 ---
 
-## 1. Prerequisites
+## 1. Architecture Overview
+
+SockPit uses **three separate subdomains** — one for each service:
+
+| Subdomain | Internal Port | Service | Example |
+|-----------|---------------|---------|---------|
+| Dashboard | `3002` | Next.js Web UI | `panel.yourdomain.com` |
+| API | `3000` | REST API Server | `api.yourdomain.com` |
+| WebSocket | `3001` | Agent Communication Hub | `ws.yourdomain.com` |
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Your Reverse Proxy                          │
+│           (Pangolin / NPM / Nginx / Traefik / Caddy)           │
+├──────────────────┬──────────────────┬───────────────────────────┤
+│ panel.domain.com │ api.domain.com   │ ws.domain.com             │
+│     :443 SSL     │     :443 SSL     │     :443 SSL + WS Upgrade │
+├──────────────────┼──────────────────┼───────────────────────────┤
+│    ↓ :3002       │    ↓ :3000       │    ↓ :3001                │
+├──────────────────┴──────────────────┴───────────────────────────┤
+│                   SockPit Server (Docker)                       │
+│   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│   │Dashboard │  │API Server│  │ WS Hub   │  │PostgreSQL│      │
+│   │  :3002   │  │  :3000   │  │  :3001   │  │  :5432   │      │
+│   └──────────┘  └──────────┘  └──────────┘  └──────────┘      │
+│                                              ┌──────────┐      │
+│                                              │  Redis   │      │
+│                                              │  :6379   │      │
+│                                              └──────────┘      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. System Requirements
 
 | Requirement | Minimum |
 |---|---|
@@ -29,36 +63,17 @@
 | **RAM** | 2 GB (4 GB recommended) |
 | **CPU** | 1 vCPU (2 recommended) |
 | **Disk** | 20 GB SSD |
-| **Network** | Reachable IP address (public VPS or LAN for homelab LXC) |
-| **GitHub Access** | SSH key or personal access token (if repo is private) |
+| **Network** | Reachable IP (public VPS or LAN for homelab LXC) |
 
-> [!IMPORTANT]
-> You must have **root** or **sudo** access to the VPS or LXC container.
-
----
-
-## 2. System Requirements
-
-The script supports and has been tested on:
-
-- **Ubuntu 22.04 LTS** / **Ubuntu 24.04 LTS**
-- **Debian 12 (Bookworm)**
-- **Proxmox LXC containers** (Debian/Ubuntu based)
-
-The following software will be **automatically installed** by the script if not already present:
-
-- Docker Engine & Docker Compose v2
-- Git
-- OpenSSL (for generating secrets)
-
-> [!NOTE]
-> **No reverse proxy, Nginx, Certbot, or SSL tooling is installed.** You are expected to handle domain routing and SSL termination via your own proxy manager (e.g., Pangolin, Nginx Proxy Manager, Traefik, Caddy).
+Supported environments:
+- **Cloud VPS**: DigitalOcean, Hetzner, Linode, Vultr, AWS EC2, etc.
+- **Homelab LXC**: Proxmox VE containers (Debian/Ubuntu based, nesting enabled)
 
 ---
 
 ## 3. Quick Deploy (Automated Script)
 
-### Step 1: SSH into your VPS or LXC container
+### Step 1: SSH into your server
 
 ```bash
 ssh root@YOUR_SERVER_IP
@@ -67,62 +82,49 @@ ssh root@YOUR_SERVER_IP
 ### Step 2: Clone and run the installer
 
 ```bash
-# Clone the repository (private — you'll need credentials)
 git clone https://github.com/rezwanahmedratul/sockpit.git /opt/sockpit
-
-# Make the script executable and run it
 chmod +x /opt/sockpit/install.sh
 sudo /opt/sockpit/install.sh
 ```
 
-The script will interactively ask you for:
+### Step 3: Follow the interactive prompts
 
-1. **Your domain name** (e.g., `panel.yourdomain.com`) — used to set API/WebSocket/Dashboard URLs in the `.env` file.
+The installer will ask:
 
-### Step 3: Point your domain
-
-After the script finishes, configure your external reverse proxy (Pangolin, NPM, etc.) to route traffic:
-
-| Service | Internal Target | Purpose |
-|---------|----------------|---------|
-| `/` (default) | `http://SERVER_IP:3002` | Next.js Dashboard |
-| `/api/` | `http://SERVER_IP:3000` | REST API |
-| `/ws/` or WebSocket | `http://SERVER_IP:3001` | Agent WebSocket (must support Upgrade headers) |
-
-> [!IMPORTANT]
-> The WebSocket endpoint **must** have `Connection: Upgrade` and `Upgrade: websocket` headers forwarded. Without this, agents cannot connect.
-
-### Step 4: Done!
-
-Your SockPit instance will be accessible at your configured domain.
+1. **Proxy mode** — Dedicated (installs Nginx + Certbot) or External (BYO proxy)
+2. **Three subdomain names** — Dashboard, API, and WebSocket domains
 
 ---
 
-## 4. What the Script Does
+## 4. Proxy Modes
 
-Here's everything the installation script automates:
+### Mode 1: Dedicated Proxy (Nginx + Certbot)
 
-```
-1. System Update & Dependency Installation
-   ├── Updates apt packages
-   ├── Installs Docker, Docker Compose, Git, OpenSSL
-   └── Enables Docker service
+Choose this if you want SockPit to manage its own reverse proxy and SSL certificates on the same server.
 
-2. Security & Secrets Generation
-   ├── Generates random JWT_SECRET (64 chars)
-   ├── Generates random ENCRYPTION_KEY (64 hex chars)
-   ├── Generates random PostgreSQL password
-   └── Creates .env from inputs
+**What gets installed:**
+- Nginx (with 3 virtual hosts — one per subdomain)
+- Certbot (Let's Encrypt SSL with auto-renewal)
 
-3. Docker Stack Deployment
-   ├── Builds server and dashboard images
-   ├── Starts PostgreSQL, Redis, Server, Dashboard
-   └── Waits for health checks
+**What you need to do:**
+- Create 3 A records pointing your subdomains to the server IP
+- The installer handles everything else (SSL provisioning, Nginx config, renewal hooks)
 
-4. Database Initialization
-   ├── Runs all migrations
-   └── Seeds default admin user
-```
+### Mode 2: External Proxy (BYO)
+
+Choose this if you already run a proxy manager like **Pangolin, Nginx Proxy Manager, Traefik, or Caddy** on another machine or your homelab gateway.
+
+**What gets installed:**
+- Only Docker and the SockPit stack (no Nginx, no Certbot)
+
+**What you need to do:**
+- Point 3 subdomains in your proxy manager to this server's IP and ports:
+
+| Subdomain | Target | Notes |
+|-----------|--------|-------|
+| `panel.yourdomain.com` | `http://SERVER_IP:3002` | Standard HTTP proxy |
+| `api.yourdomain.com` | `http://SERVER_IP:3000` | Standard HTTP proxy |
+| `ws.yourdomain.com` | `http://SERVER_IP:3001` | **Must enable WebSocket support** |
 
 ---
 
@@ -144,7 +146,7 @@ Here's everything the installation script automates:
 # Check all containers are running
 docker compose -f /opt/sockpit/docker-compose.prod.yml ps
 
-# Test the API health endpoint (from the server itself)
+# Test the API health endpoint
 curl http://localhost:3000/api/health
 
 # View server logs
@@ -153,72 +155,65 @@ docker compose -f /opt/sockpit/docker-compose.prod.yml logs -f server
 
 ---
 
-## 6. Reverse Proxy Configuration
+## 6. External Proxy Configuration
 
-SockPit does **not** manage its own reverse proxy. You must configure routing in your own proxy manager.
+If you chose **External Proxy mode**, configure routing in your proxy manager:
 
-### Exposed Ports
+### WebSocket Requirements
 
-| Port | Service | Protocol |
-|------|---------|----------|
-| `3000` | REST API Server | HTTP |
-| `3001` | WebSocket Hub | HTTP + WebSocket Upgrade |
-| `3002` | Next.js Dashboard | HTTP |
+The `ws.yourdomain.com` target is a **persistent, long-lived WebSocket connection** (heartbeat every 30s). Your proxy **must**:
 
-### Routing Rules (for Pangolin / NPM / Traefik / Caddy)
+1. Forward `Upgrade: websocket` and `Connection: upgrade` headers
+2. Set read/write timeout to at least `86400` seconds (24 hours)
+3. Disable response buffering
 
-Point your domain (e.g. `panel.yourdomain.com`) to your server's IP and configure these routes:
+### Pangolin
 
-| Path / Location | Upstream Target | Notes |
-|-----------------|-----------------|-------|
-| `/` (default) | `http://SERVER_IP:3002` | Dashboard (Next.js) |
-| `/api/*` | `http://SERVER_IP:3000` | REST API |
-| WebSocket / `/ws/*` | `http://SERVER_IP:3001` | **Must** forward `Upgrade` and `Connection` headers, set read timeout to `86400s` |
+Create three sites in Pangolin, each pointing to the server IP with the respective port. Enable WebSocket for the port `3001` target.
 
-### WebSocket Proxy Requirements
+### Nginx Proxy Manager (NPM)
 
-The agent WebSocket connection is **persistent and long-lived** (heartbeat every 30s). Your proxy **must**:
+Create 3 Proxy Hosts:
 
-1. Forward `Upgrade: websocket` and `Connection: upgrade` headers.
-2. Set a long read/write timeout (at minimum `86400` seconds / 24 hours).
-3. Not buffer responses.
+| Domain | Forward IP | Forward Port | WebSocket |
+|--------|-----------|--------------|-----------|
+| `panel.yourdomain.com` | `SERVER_IP` | `3002` | Off |
+| `api.yourdomain.com` | `SERVER_IP` | `3000` | Off |
+| `ws.yourdomain.com` | `SERVER_IP` | `3001` | **On** |
 
-### Example: Pangolin
+Enable SSL (Let's Encrypt) on each host via NPM's built-in SSL tab.
 
-In Pangolin, create a new site pointing to your SockPit server's IP. Add three upstream targets for ports `3000`, `3001`, and `3002`. Enable WebSocket support for the port `3001` target.
-
-### Example: Nginx Proxy Manager (NPM)
-
-Create a Proxy Host for your domain:
-- **Domain**: `panel.yourdomain.com`
-- **Forward Hostname / IP**: `YOUR_SERVER_IP`
-- **Forward Port**: `3002`
-- Enable **WebSockets Support**
-- Under **Advanced**, add custom Nginx configuration for API and WS routing.
-
-### Example: Caddy (Caddyfile)
+### Caddy (Caddyfile)
 
 ```
 panel.yourdomain.com {
-    handle /api/* {
-        reverse_proxy SERVER_IP:3000
-    }
-
-    handle /ws/* {
-        reverse_proxy SERVER_IP:3001
-    }
-
-    handle {
-        reverse_proxy SERVER_IP:3002
-    }
+    reverse_proxy SERVER_IP:3002
 }
+
+api.yourdomain.com {
+    reverse_proxy SERVER_IP:3000
+}
+
+ws.yourdomain.com {
+    reverse_proxy SERVER_IP:3001
+}
+```
+
+### Traefik (Docker labels)
+
+```yaml
+labels:
+  - "traefik.http.routers.sockpit-dash.rule=Host(`panel.yourdomain.com`)"
+  - "traefik.http.services.sockpit-dash.loadbalancer.server.port=3002"
+  - "traefik.http.routers.sockpit-api.rule=Host(`api.yourdomain.com`)"
+  - "traefik.http.services.sockpit-api.loadbalancer.server.port=3000"
+  - "traefik.http.routers.sockpit-ws.rule=Host(`ws.yourdomain.com`)"
+  - "traefik.http.services.sockpit-ws.loadbalancer.server.port=3001"
 ```
 
 ---
 
 ## 7. Manual Deployment (Step-by-Step)
-
-If you prefer to deploy manually instead of using the script:
 
 ### 7.1 Install Dependencies
 
@@ -244,7 +239,7 @@ cd /opt/sockpit
 cp .env.example .env
 ```
 
-Edit `.env` with production values:
+Edit `.env` with your three subdomains:
 
 ```env
 # Server
@@ -269,13 +264,13 @@ JWT_REFRESH_EXPIRES_IN=7d
 # Encryption — generate with: openssl rand -hex 32
 ENCRYPTION_KEY=YOUR_64_HEX_CHAR_KEY
 
-# URLs — replace with your actual domain
-DASHBOARD_URL=https://YOUR_DOMAIN
-AGENT_DOWNLOAD_BASE_URL=https://YOUR_DOMAIN/downloads
+# URLs — each service gets its own subdomain
+DASHBOARD_URL=https://panel.yourdomain.com
+AGENT_DOWNLOAD_BASE_URL=https://api.yourdomain.com/downloads
 
-# Dashboard Build-time Environment
-NEXT_PUBLIC_API_URL=https://YOUR_DOMAIN/api
-NEXT_PUBLIC_WS_URL=wss://YOUR_DOMAIN/ws
+# Dashboard connects to API and WS via their subdomains
+NEXT_PUBLIC_API_URL=https://api.yourdomain.com
+NEXT_PUBLIC_WS_URL=wss://ws.yourdomain.com
 ```
 
 ### 7.4 Build & Start Docker Containers
@@ -292,15 +287,13 @@ docker compose -f docker-compose.prod.yml exec server npx node-pg-migrate up --m
 docker compose -f docker-compose.prod.yml exec server node src/seeds/001_admin_user.js
 ```
 
-### 7.6 Configure Your Reverse Proxy
+### 7.6 Configure Your Proxy
 
-Point your domain to the server IP in your external proxy manager and configure routes as described in [Section 6](#6-reverse-proxy-configuration).
+Point the 3 subdomains to the server as described in [Section 6](#6-external-proxy-configuration).
 
 ---
 
 ## 8. Firewall Configuration
-
-If your VPS has a firewall (UFW), allow the required ports:
 
 ```bash
 sudo ufw default deny incoming
@@ -313,37 +306,26 @@ sudo ufw --force enable
 ```
 
 > [!TIP]
-> If your reverse proxy runs on the **same machine**, you can keep ports 3000–3002 closed to the public and only allow `localhost` access. If it runs externally (e.g., Pangolin on another server), these ports must be reachable from the proxy.
+> If your reverse proxy runs on the **same machine**, you can restrict ports 3000–3002 to localhost only. If it runs externally (Pangolin on another box), keep them open.
 
-If agents expose SOCKS5 ports directly on this machine, open them too:
+If agents expose SOCKS5 ports directly:
 
 ```bash
-# Example: open a SOCKS5 port range
 sudo ufw allow 10000:20000/tcp
 ```
 
 > [!NOTE]
-> **Homelab LXC Note**: If running inside a Proxmox LXC container, the host firewall (Proxmox Firewall or iptables on the host) controls inbound access. UFW inside the container may not be necessary — check your Proxmox network configuration.
+> **Homelab LXC**: If running inside a Proxmox LXC container, the host firewall controls inbound access. UFW inside the container may not work — configure access via Proxmox Firewall or host iptables instead.
 
 ---
 
 ## 9. Updating SockPit
 
-To update to the latest version:
-
 ```bash
 cd /opt/sockpit
-
-# Pull latest code
 git pull origin main
-
-# Rebuild and restart containers
 docker compose -f docker-compose.prod.yml up -d --build
-
-# Run any new migrations
 docker compose -f docker-compose.prod.yml exec server npx node-pg-migrate up --migrations-dir migrations
-
-# Verify
 docker compose -f docker-compose.prod.yml ps
 ```
 
@@ -354,14 +336,11 @@ docker compose -f docker-compose.prod.yml ps
 ### Backup PostgreSQL
 
 ```bash
-# One-time backup
 docker compose -f /opt/sockpit/docker-compose.prod.yml exec postgres \
   pg_dump -U sockpit sockpit | gzip > ~/sockpit-backup-$(date +%Y%m%d).sql.gz
 ```
 
 ### Automated Daily Backups
-
-Add to crontab (`crontab -e`):
 
 ```cron
 0 3 * * * docker compose -f /opt/sockpit/docker-compose.prod.yml exec -T postgres pg_dump -U sockpit sockpit | gzip > /opt/sockpit/backups/sockpit-$(date +\%Y\%m\%d).sql.gz 2>/dev/null
@@ -378,8 +357,6 @@ gunzip < ~/sockpit-backup-YYYYMMDD.sql.gz | docker compose -f /opt/sockpit/docke
 
 ## 11. Monitoring & Logs
 
-### View Container Logs
-
 ```bash
 # All services
 docker compose -f /opt/sockpit/docker-compose.prod.yml logs -f
@@ -387,19 +364,13 @@ docker compose -f /opt/sockpit/docker-compose.prod.yml logs -f
 # Specific service
 docker compose -f /opt/sockpit/docker-compose.prod.yml logs -f server
 docker compose -f /opt/sockpit/docker-compose.prod.yml logs -f dashboard
-docker compose -f /opt/sockpit/docker-compose.prod.yml logs -f postgres
-docker compose -f /opt/sockpit/docker-compose.prod.yml logs -f redis
 ```
 
-### Check Container Resource Usage
-
 ```bash
+# Container resource usage
 docker stats --no-stream
-```
 
-### Health Check
-
-```bash
+# Health check
 curl -s http://localhost:3000/api/health | jq .
 ```
 
@@ -410,10 +381,7 @@ curl -s http://localhost:3000/api/health | jq .
 ### Containers won't start
 
 ```bash
-# Check for build errors
 docker compose -f /opt/sockpit/docker-compose.prod.yml logs server
-
-# Common fix: rebuild from scratch
 docker compose -f /opt/sockpit/docker-compose.prod.yml down
 docker compose -f /opt/sockpit/docker-compose.prod.yml up -d --build --force-recreate
 ```
@@ -421,10 +389,7 @@ docker compose -f /opt/sockpit/docker-compose.prod.yml up -d --build --force-rec
 ### Database connection errors
 
 ```bash
-# Check if PostgreSQL is healthy
 docker compose -f /opt/sockpit/docker-compose.prod.yml exec postgres pg_isready -U sockpit
-
-# Check environment variables
 docker compose -f /opt/sockpit/docker-compose.prod.yml exec server env | grep DATABASE
 ```
 
@@ -439,25 +404,13 @@ curl -i -N \
   -H "Sec-WebSocket-Key: test" \
   http://localhost:3001/
 
-# If this works but your domain doesn't, the issue is in your reverse proxy config.
-# Ensure WebSocket upgrade headers are being forwarded.
+# If this works but wss://ws.yourdomain.com doesn't, the issue is your proxy.
 ```
 
-### Port conflicts
+### LXC container issues
 
 ```bash
-# Check what's using the ports
-sudo ss -tlnp | grep -E '3000|3001|3002'
-```
-
-### LXC container-specific issues
-
-```bash
-# If Docker fails to start inside an LXC container, ensure the container is
-# configured as "privileged" or has the required AppArmor/nesting features enabled.
-# In Proxmox, check: Options → Features → nesting=1, keyctl=1
-
-# Verify Docker works
+# Ensure nesting is enabled in Proxmox: Options → Features → nesting=1, keyctl=1
 docker run --rm hello-world
 ```
 
@@ -465,7 +418,7 @@ docker run --rm hello-world
 
 ```bash
 cd /opt/sockpit
-docker compose -f docker-compose.prod.yml down -v   # WARNING: destroys database data
+docker compose -f docker-compose.prod.yml down -v   # WARNING: destroys database
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml exec server npx node-pg-migrate up --migrations-dir migrations
 docker compose -f docker-compose.prod.yml exec server node src/seeds/001_admin_user.js

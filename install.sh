@@ -3,15 +3,13 @@
 # SockPit — Automated Installation Script
 # Deploys the SockPit stack with Docker, PostgreSQL & Redis
 #
-# This script does NOT install or configure any reverse proxy, SSL, or firewall.
-# You are expected to handle domain routing and SSL via your own proxy manager
-# (e.g., Pangolin, Nginx Proxy Manager, Traefik, Caddy).
+# Two modes:
+#   1. Dedicated Proxy — Installs Nginx + Certbot, manages SSL/TLS for you
+#   2. External Proxy  — Exposes raw ports, you point 3 subdomains from your own proxy
 #
 # Usage:
 #   chmod +x install.sh
 #   sudo ./install.sh
-#
-# Repository: https://github.com/rezwanahmedratul/sockpit.git
 #
 
 set -euo pipefail
@@ -23,13 +21,21 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # ─── Configuration ──────────────────────────────────────────────────────────────
 INSTALL_DIR="/opt/sockpit"
 COMPOSE_FILE="docker-compose.prod.yml"
 DOWNLOADS_DIR="${INSTALL_DIR}/downloads"
 BACKUPS_DIR="${INSTALL_DIR}/backups"
+NGINX_CONF="/etc/nginx/sites-available/sockpit"
+NGINX_LINK="/etc/nginx/sites-enabled/sockpit"
+
+# These get set during prompts
+PROXY_MODE=""        # "dedicated" or "external"
+DOMAIN_DASHBOARD=""
+DOMAIN_API=""
+DOMAIN_WS=""
 
 # ─── Helper Functions ───────────────────────────────────────────────────────────
 log_info()    { echo -e "${BLUE}[INFO]${NC}    $1"; }
@@ -78,8 +84,7 @@ check_os() {
     case "$ID" in
         ubuntu)
             if [[ "$VERSION_ID" != "22.04" && "$VERSION_ID" != "24.04" ]]; then
-                log_warn "Detected Ubuntu $VERSION_ID. This script is tested on 22.04 and 24.04."
-                log_warn "Proceeding anyway — some steps may need adjustments."
+                log_warn "Detected Ubuntu $VERSION_ID. Tested on 22.04 and 24.04."
             else
                 log_success "Detected Ubuntu $VERSION_ID"
             fi
@@ -87,15 +92,13 @@ check_os() {
         debian)
             local major_version="${VERSION_ID%%.*}"
             if [[ "$major_version" -lt 12 ]]; then
-                log_warn "Detected Debian $VERSION_ID. This script is tested on Debian 12+."
-                log_warn "Proceeding anyway — some steps may need adjustments."
+                log_warn "Detected Debian $VERSION_ID. Tested on Debian 12+."
             else
                 log_success "Detected Debian $VERSION_ID"
             fi
             ;;
         *)
-            log_warn "Detected unsupported OS: $ID $VERSION_ID"
-            log_warn "This script is designed for Ubuntu/Debian. Proceeding at your own risk."
+            log_warn "Detected unsupported OS: $ID $VERSION_ID. Proceeding at your own risk."
             ;;
     esac
 }
@@ -103,6 +106,15 @@ check_os() {
 get_local_ip() {
     local ip=""
     ip=$(hostname -I | awk '{print $1}') || ip="unknown"
+    echo "$ip"
+}
+
+get_public_ip() {
+    local ip=""
+    ip=$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null) || \
+    ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null) || \
+    ip=$(curl -s --max-time 5 https://icanhazip.com 2>/dev/null) || \
+    ip=$(hostname -I | awk '{print $1}')
     echo "$ip"
 }
 
@@ -119,10 +131,18 @@ generate_password() {
     openssl rand -base64 24 | tr -d '/+=' | head -c 32
 }
 
-# ─── Main Installation Steps ────────────────────────────────────────────────────
+strip_protocol() {
+    local val="$1"
+    val="${val#https://}"
+    val="${val#http://}"
+    val="${val%/}"
+    echo "$val"
+}
+
+# ─── Installation Steps ─────────────────────────────────────────────────────────
 
 install_dependencies() {
-    log_step "Step 1/5: Installing System Dependencies"
+    log_step "Installing System Dependencies"
 
     log_info "Updating system packages..."
     apt-get update -qq
@@ -144,7 +164,7 @@ install_dependencies() {
 }
 
 install_docker() {
-    log_step "Step 2/5: Installing Docker"
+    log_step "Installing Docker"
 
     if command -v docker &>/dev/null; then
         log_success "Docker is already installed: $(docker --version)"
@@ -154,11 +174,9 @@ install_docker() {
         log_success "Docker installed: $(docker --version)"
     fi
 
-    # Ensure Docker service is running
     systemctl enable docker
     systemctl start docker
 
-    # Verify Docker Compose v2
     if docker compose version &>/dev/null; then
         log_success "Docker Compose v2 available: $(docker compose version --short)"
     else
@@ -167,52 +185,362 @@ install_docker() {
     fi
 }
 
-prompt_domain() {
-    log_step "Step 3/5: Domain Configuration"
+install_nginx_certbot() {
+    log_step "Installing Nginx & Certbot"
 
-    echo -e "${BOLD}Enter the domain name${NC} that you will point to this server via your reverse proxy"
-    echo -e "(e.g., panel.yourdomain.com or sockpit.example.com):"
+    if command -v nginx &>/dev/null; then
+        log_success "Nginx is already installed"
+    else
+        log_info "Installing Nginx..."
+        apt-get install -y -qq nginx
+        log_success "Nginx installed"
+    fi
+
+    if command -v certbot &>/dev/null; then
+        log_success "Certbot is already installed"
+    else
+        log_info "Installing Certbot..."
+        apt-get install -y -qq certbot python3-certbot-nginx
+        log_success "Certbot installed"
+    fi
+
+    systemctl enable nginx
+}
+
+# ─── Prompts ─────────────────────────────────────────────────────────────────────
+
+prompt_proxy_mode() {
+    log_step "Proxy Configuration"
+
+    echo -e "${BOLD}How do you want to handle reverse proxy & SSL?${NC}"
     echo ""
-    read -rp "  Domain: " DOMAIN
+    echo -e "  ${CYAN}1)${NC} ${BOLD}Dedicated proxy${NC} — Install Nginx + Certbot on this server."
+    echo -e "     SockPit will manage its own reverse proxy and SSL/TLS certificates."
+    echo ""
+    echo -e "  ${CYAN}2)${NC} ${BOLD}External proxy (BYO)${NC} — I'll use my own proxy manager"
+    echo -e "     (Pangolin, NPM, Traefik, Caddy, etc.)"
+    echo -e "     SockPit will only expose raw ports for you to route."
+    echo ""
+    read -rp "  Select [1 or 2]: " proxy_choice
 
-    if [[ -z "$DOMAIN" ]]; then
-        log_error "Domain cannot be empty."
+    case "$proxy_choice" in
+        1)
+            PROXY_MODE="dedicated"
+            log_success "Mode: Dedicated proxy (Nginx + Certbot)"
+            ;;
+        2)
+            PROXY_MODE="external"
+            log_success "Mode: External proxy (BYO)"
+            ;;
+        *)
+            log_error "Invalid selection. Please enter 1 or 2."
+            exit 1
+            ;;
+    esac
+}
+
+prompt_domains() {
+    log_step "Domain Configuration"
+
+    echo -e "${BOLD}SockPit uses three separate subdomains — one for each service:${NC}"
+    echo ""
+    echo -e "  ${CYAN}Dashboard${NC}  — The web UI (e.g., ${BOLD}panel.yourdomain.com${NC})"
+    echo -e "  ${CYAN}API${NC}        — REST API server (e.g., ${BOLD}api.yourdomain.com${NC})"
+    echo -e "  ${CYAN}WebSocket${NC}  — Agent communication hub (e.g., ${BOLD}ws.yourdomain.com${NC})"
+    echo ""
+
+    # Dashboard domain
+    read -rp "  Dashboard domain: " DOMAIN_DASHBOARD
+    if [[ -z "$DOMAIN_DASHBOARD" ]]; then
+        log_error "Dashboard domain cannot be empty."
+        exit 1
+    fi
+    DOMAIN_DASHBOARD=$(strip_protocol "$DOMAIN_DASHBOARD")
+
+    # API domain
+    read -rp "  API domain: " DOMAIN_API
+    if [[ -z "$DOMAIN_API" ]]; then
+        log_error "API domain cannot be empty."
+        exit 1
+    fi
+    DOMAIN_API=$(strip_protocol "$DOMAIN_API")
+
+    # WebSocket domain
+    read -rp "  WebSocket domain: " DOMAIN_WS
+    if [[ -z "$DOMAIN_WS" ]]; then
+        log_error "WebSocket domain cannot be empty."
+        exit 1
+    fi
+    DOMAIN_WS=$(strip_protocol "$DOMAIN_WS")
+
+    echo ""
+    log_success "Dashboard: ${BOLD}${DOMAIN_DASHBOARD}${NC}"
+    log_success "API:       ${BOLD}${DOMAIN_API}${NC}"
+    log_success "WebSocket: ${BOLD}${DOMAIN_WS}${NC}"
+}
+
+# ─── Dedicated Proxy Mode ───────────────────────────────────────────────────────
+
+wait_for_dns() {
+    local PUBLIC_IP
+    PUBLIC_IP=$(get_public_ip)
+
+    echo ""
+    echo -e "${YELLOW}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}${BOLD}║                    ACTION REQUIRED                           ║${NC}"
+    echo -e "${YELLOW}${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  Create A records pointing these domains to this server:      ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}    Server IP: ${GREEN}${BOLD}${PUBLIC_IP}${NC}                             ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}    ${CYAN}${DOMAIN_DASHBOARD}${NC}  →  ${GREEN}${PUBLIC_IP}${NC}               ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}    ${CYAN}${DOMAIN_API}${NC}  →  ${GREEN}${PUBLIC_IP}${NC}               ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}    ${CYAN}${DOMAIN_WS}${NC}  →  ${GREEN}${PUBLIC_IP}${NC}               ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    echo -e "${BOLD}After creating the DNS records, press Enter to continue...${NC}"
+    read -r
+
+    log_info "Verifying DNS resolution..."
+
+    local all_good=true
+    for domain in "$DOMAIN_DASHBOARD" "$DOMAIN_API" "$DOMAIN_WS"; do
+        local resolved_ip=""
+        resolved_ip=$(dig +short "$domain" A 2>/dev/null | head -n1) || true
+
+        if [[ "$resolved_ip" == "$PUBLIC_IP" ]]; then
+            log_success "${domain} → ${resolved_ip} ✓"
+        else
+            log_warn "${domain} → ${resolved_ip:-none} (expected ${PUBLIC_IP})"
+            all_good=false
+        fi
+    done
+
+    if [[ "$all_good" != "true" ]]; then
+        log_warn "Some domains are not resolving correctly yet."
+        echo -e "${YELLOW}Continue anyway? (y/N):${NC}"
+        read -rp "  " continue_anyway
+        if [[ "${continue_anyway,,}" != "y" && "${continue_anyway,,}" != "yes" ]]; then
+            log_error "Aborting. Configure DNS and run the script again."
+            exit 1
+        fi
+        log_warn "Continuing — SSL may fail if DNS is not ready."
+    fi
+}
+
+setup_ssl() {
+    log_step "Obtaining SSL Certificates"
+
+    systemctl stop nginx 2>/dev/null || true
+
+    echo ""
+    echo -e "${BOLD}Enter your email address${NC} (for Let's Encrypt SSL certificate notifications):"
+    read -rp "  Email: " CERT_EMAIL
+
+    if [[ -z "$CERT_EMAIL" ]]; then
+        log_error "Email cannot be empty."
         exit 1
     fi
 
-    # Strip any protocol prefix the user might accidentally include
-    DOMAIN="${DOMAIN#https://}"
-    DOMAIN="${DOMAIN#http://}"
-    DOMAIN="${DOMAIN%/}"
+    log_info "Requesting SSL certificates for all 3 domains..."
 
-    log_success "Domain set to: ${BOLD}${DOMAIN}${NC}"
+    if certbot certonly \
+        --standalone \
+        --non-interactive \
+        --agree-tos \
+        --email "$CERT_EMAIL" \
+        -d "$DOMAIN_DASHBOARD" \
+        -d "$DOMAIN_API" \
+        -d "$DOMAIN_WS"; then
+        log_success "SSL certificates obtained"
+    else
+        log_error "Failed to obtain SSL certificates."
+        log_error "Make sure all domains point to this server and port 80 is open."
+        exit 1
+    fi
+}
 
+configure_nginx() {
+    log_step "Configuring Nginx Reverse Proxy"
+
+    mkdir -p "$DOWNLOADS_DIR"
+
+    # Determine the cert domain (certbot groups them under the first domain)
+    local CERT_DOMAIN="$DOMAIN_DASHBOARD"
+
+    cat > "$NGINX_CONF" << NGINX_EOF
+# SockPit — Nginx Reverse Proxy Configuration
+# Auto-generated by install.sh on $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+# ─── HTTP → HTTPS redirect (all domains) ───
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN_DASHBOARD} ${DOMAIN_API} ${DOMAIN_WS};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+# ─── Dashboard (${DOMAIN_DASHBOARD}) ───
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${DOMAIN_DASHBOARD};
+
+    ssl_certificate /etc/letsencrypt/live/${CERT_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${CERT_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    client_max_body_size 50M;
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+    }
+}
+
+# ─── API Server (${DOMAIN_API}) ───
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${DOMAIN_API};
+
+    ssl_certificate /etc/letsencrypt/live/${CERT_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${CERT_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    client_max_body_size 50M;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+    }
+
+    # Agent binary downloads (static files)
+    location /downloads/ {
+        alias ${DOWNLOADS_DIR}/;
+        autoindex off;
+        expires 1h;
+        add_header Cache-Control "public, immutable";
+    }
+}
+
+# ─── WebSocket Hub (${DOMAIN_WS}) ───
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${DOMAIN_WS};
+
+    ssl_certificate /etc/letsencrypt/live/${CERT_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${CERT_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+}
+NGINX_EOF
+
+    ln -sf "$NGINX_CONF" "$NGINX_LINK"
+    rm -f /etc/nginx/sites-enabled/default
+
+    nginx -t
+    systemctl start nginx
+    systemctl reload nginx
+
+    log_success "Nginx configured with 3 virtual hosts"
+}
+
+setup_certbot_renewal() {
+    log_info "Setting up SSL certificate auto-renewal..."
+
+    mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+
+    cat > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh << 'HOOK_EOF'
+#!/bin/bash
+systemctl reload nginx
+HOOK_EOF
+
+    chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+    systemctl enable certbot.timer 2>/dev/null || true
+    systemctl start certbot.timer 2>/dev/null || true
+
+    log_success "Certbot auto-renewal configured"
+}
+
+# ─── External Proxy Mode ────────────────────────────────────────────────────────
+
+show_external_proxy_info() {
     local LOCAL_IP
     LOCAL_IP=$(get_local_ip)
 
     echo ""
     echo -e "${YELLOW}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}${BOLD}║                    PROXY CONFIGURATION                       ║${NC}"
+    echo -e "${YELLOW}${BOLD}║                 REVERSE PROXY CONFIGURATION                  ║${NC}"
     echo -e "${YELLOW}${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}  After installation, point your domain in your proxy          ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}  manager (Pangolin, NPM, Traefik, etc.) to this server:       ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  Point these subdomains to this server in your proxy:         ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}    Domain:    ${CYAN}${BOLD}${DOMAIN}${NC}                    ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}    Server IP: ${GREEN}${BOLD}${LOCAL_IP}${NC}                             ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}  Route:  /       → http://${LOCAL_IP}:3002  (Dashboard)        ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}  Route:  /api/   → http://${LOCAL_IP}:3000  (API)              ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}  Route:  /ws/    → http://${LOCAL_IP}:3001  (WebSocket)        ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}    ${CYAN}${DOMAIN_DASHBOARD}${NC}  →  http://${LOCAL_IP}:${BOLD}3002${NC}  (Dashboard)    ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}    ${CYAN}${DOMAIN_API}${NC}  →  http://${LOCAL_IP}:${BOLD}3000${NC}  (API)           ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}    ${CYAN}${DOMAIN_WS}${NC}  →  http://${LOCAL_IP}:${BOLD}3001${NC}  (WebSocket)     ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
-    echo -e "${YELLOW}${BOLD}║${NC}  ⚠ WebSocket route MUST forward Upgrade headers!             ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  ⚠ WebSocket target MUST forward Upgrade headers!            ${YELLOW}${BOLD}║${NC}"
+    echo -e "${YELLOW}${BOLD}║${NC}  ⚠ Set WebSocket read timeout to 86400s (24h)                ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}║${NC}                                                              ${YELLOW}${BOLD}║${NC}"
     echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
 
+# ─── Shared Steps ────────────────────────────────────────────────────────────────
+
 setup_env() {
-    log_step "Step 4/5: Generating Secure Environment Configuration"
+    log_step "Generating Secure Environment Configuration"
 
     local JWT_SECRET
     local ENCRYPTION_KEY
@@ -250,13 +578,13 @@ JWT_REFRESH_EXPIRES_IN=7d
 # SOCKS5 AES-256 Encryption Key (32-byte = 64 hex characters)
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
-# Public URLs — these are used for agent installer script generation
-DASHBOARD_URL=https://${DOMAIN}
-AGENT_DOWNLOAD_BASE_URL=https://${DOMAIN}/downloads
+# Public URLs (separate subdomains per service)
+DASHBOARD_URL=https://${DOMAIN_DASHBOARD}
+AGENT_DOWNLOAD_BASE_URL=https://${DOMAIN_API}/downloads
 
 # Dashboard Build-time Environment
-NEXT_PUBLIC_API_URL=https://${DOMAIN}/api
-NEXT_PUBLIC_WS_URL=wss://${DOMAIN}/ws
+NEXT_PUBLIC_API_URL=https://${DOMAIN_API}
+NEXT_PUBLIC_WS_URL=wss://${DOMAIN_WS}
 ENV_EOF
 
     chmod 600 "${INSTALL_DIR}/.env"
@@ -268,11 +596,10 @@ ENV_EOF
 }
 
 deploy_docker_stack() {
-    log_step "Step 5/5: Building & Starting Docker Containers"
+    log_step "Building & Starting Docker Containers"
 
     cd "$INSTALL_DIR"
 
-    # Create required directories
     mkdir -p "$DOWNLOADS_DIR"
     mkdir -p "$BACKUPS_DIR"
 
@@ -282,7 +609,6 @@ deploy_docker_stack() {
     log_info "Starting containers..."
     docker compose -f "$COMPOSE_FILE" up -d
 
-    # Wait for services to become healthy
     log_info "Waiting for services to become healthy..."
 
     local max_wait=60
@@ -304,28 +630,28 @@ deploy_docker_stack() {
     done
 
     if [[ $waited -ge $max_wait ]]; then
-        log_warn "Timed out waiting for health checks. Checking container status..."
+        log_warn "Timed out waiting for health checks."
         docker compose -f "$COMPOSE_FILE" ps
     fi
 
-    # Show container status
     echo ""
     docker compose -f "$COMPOSE_FILE" ps
     echo ""
 
-    # Run database migrations and seed admin
-    log_info "Running database migrations..."
+    # Database initialization
     sleep 5
+
+    log_info "Running database migrations..."
     docker compose -f "$COMPOSE_FILE" exec -T server npx node-pg-migrate up --migrations-dir migrations 2>&1 || {
-        log_warn "Migration command returned a non-zero exit code. This may be okay if migrations were already applied."
+        log_warn "Migrations may already be applied."
     }
 
     log_info "Seeding default admin user..."
     docker compose -f "$COMPOSE_FILE" exec -T server node src/seeds/001_admin_user.js 2>&1 || {
-        log_warn "Seed command returned a non-zero exit code. Admin user may already exist."
+        log_warn "Admin user may already exist."
     }
 
-    log_success "Database initialized"
+    log_success "Docker stack deployed and database initialized"
 }
 
 print_summary() {
@@ -344,17 +670,17 @@ DONE
     echo -e "${NC}"
 
     echo -e "  ${BOLD}Server IP:${NC}            ${GREEN}${LOCAL_IP}${NC}"
+    echo -e "  ${BOLD}Proxy Mode:${NC}           ${CYAN}${PROXY_MODE}${NC}"
     echo ""
-    echo -e "  ${BOLD}─── Exposed Ports ───${NC}"
-    echo -e "  Dashboard:          ${CYAN}http://${LOCAL_IP}:3002${NC}"
-    echo -e "  API Server:         ${CYAN}http://${LOCAL_IP}:3000${NC}"
-    echo -e "  WebSocket Hub:      ${CYAN}http://${LOCAL_IP}:3001${NC}"
+    echo -e "  ${BOLD}─── Service URLs ───${NC}"
+    echo -e "  Dashboard:          ${CYAN}https://${DOMAIN_DASHBOARD}${NC}"
+    echo -e "  API Server:         ${CYAN}https://${DOMAIN_API}${NC}"
+    echo -e "  WebSocket Hub:      ${CYAN}wss://${DOMAIN_WS}${NC}"
     echo ""
-    echo -e "  ${BOLD}─── After Proxy Setup ───${NC}"
-    echo -e "  Dashboard URL:      ${CYAN}https://${DOMAIN}${NC}"
-    echo -e "  API Endpoint:       ${CYAN}https://${DOMAIN}/api${NC}"
-    echo -e "  WebSocket Endpoint: ${CYAN}wss://${DOMAIN}/ws${NC}"
-    echo -e "  Health Check:       ${CYAN}http://${LOCAL_IP}:3000/api/health${NC}"
+    echo -e "  ${BOLD}─── Raw Ports (internal) ───${NC}"
+    echo -e "  Dashboard:          http://${LOCAL_IP}:3002"
+    echo -e "  API Server:         http://${LOCAL_IP}:3000"
+    echo -e "  WebSocket Hub:      http://${LOCAL_IP}:3001"
     echo ""
     echo -e "  ${BOLD}─── Default Admin Credentials ───${NC}"
     echo -e "  Email:    admin@sockpit.local"
@@ -362,11 +688,14 @@ DONE
     echo ""
     echo -e "  ${RED}${BOLD}⚠  IMPORTANT: Change the default admin password immediately!${NC}"
     echo ""
-    echo -e "  ${BOLD}─── Next Step ───${NC}"
-    echo -e "  Point your domain ${CYAN}${DOMAIN}${NC} to ${GREEN}${LOCAL_IP}${NC}"
-    echo -e "  in your reverse proxy manager (Pangolin, NPM, etc.)"
-    echo -e "  and route /api/ → :3000, /ws/ → :3001, / → :3002"
-    echo ""
+
+    if [[ "$PROXY_MODE" == "external" ]]; then
+        echo -e "  ${BOLD}─── Next Step ───${NC}"
+        echo -e "  Configure your reverse proxy to route the three subdomains"
+        echo -e "  to the ports shown above. Enable WebSocket support for ${CYAN}${DOMAIN_WS}${NC}."
+        echo ""
+    fi
+
     echo -e "  ${BOLD}─── Useful Commands ───${NC}"
     echo -e "  View logs:        ${CYAN}docker compose -f ${INSTALL_DIR}/${COMPOSE_FILE} logs -f${NC}"
     echo -e "  Restart stack:    ${CYAN}docker compose -f ${INSTALL_DIR}/${COMPOSE_FILE} restart${NC}"
@@ -376,6 +705,10 @@ DONE
     echo -e "  ${BOLD}─── File Locations ───${NC}"
     echo -e "  Install directory: ${INSTALL_DIR}"
     echo -e "  Environment file:  ${INSTALL_DIR}/.env"
+    if [[ "$PROXY_MODE" == "dedicated" ]]; then
+        echo -e "  Nginx config:      ${NGINX_CONF}"
+        echo -e "  SSL certificates:  /etc/letsencrypt/live/${DOMAIN_DASHBOARD}/"
+    fi
     echo -e "  Downloads dir:     ${DOWNLOADS_DIR}"
     echo -e "  Backups dir:       ${BACKUPS_DIR}"
     echo ""
@@ -390,7 +723,6 @@ main() {
 
     # Ensure we're running from the install directory
     if [[ ! -f "${INSTALL_DIR}/docker-compose.prod.yml" ]]; then
-        # Check if we're being run from a cloned repo location
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         if [[ -f "${SCRIPT_DIR}/docker-compose.prod.yml" ]]; then
             if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
@@ -400,14 +732,33 @@ main() {
             fi
         else
             log_error "Cannot find docker-compose.prod.yml."
-            log_error "Please clone the repo first: git clone https://github.com/rezwanahmedratul/sockpit.git ${INSTALL_DIR}"
+            log_error "Clone the repo first: git clone https://github.com/rezwanahmedratul/sockpit.git ${INSTALL_DIR}"
             exit 1
         fi
     fi
 
+    # Step 1: Common deps + Docker
     install_dependencies
     install_docker
-    prompt_domain
+
+    # Step 2: Choose proxy mode
+    prompt_proxy_mode
+
+    # Step 3: Get domain names
+    prompt_domains
+
+    # Step 4: Mode-specific setup
+    if [[ "$PROXY_MODE" == "dedicated" ]]; then
+        install_nginx_certbot
+        wait_for_dns
+        setup_ssl
+        configure_nginx
+        setup_certbot_renewal
+    else
+        show_external_proxy_info
+    fi
+
+    # Step 5: Env + Deploy
     setup_env
     deploy_docker_stack
     print_summary
